@@ -1,0 +1,1 @@
+chrome-extension://laankejkbhbdhmipfmgcngdelahlfoji/assets/youtube-hulu-vast-ads.js

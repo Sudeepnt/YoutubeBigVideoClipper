@@ -66,16 +66,16 @@ export default function NotifyView() {
         <div className="content-area" style={{ padding: '28px 34px', color: '#fff' }}>
             <div style={{ maxWidth: 920, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ width: 42, height: 42, borderRadius: 10, background: '#10141d', border: '1px solid #ffffff1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <BellRing size={20} color="#93c5fd" />
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--bg-input)', border: '1px solid var(--border-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <BellRing size={20} color="var(--text-primary)" />
                     </div>
                     <div>
                         <h1 style={{ fontSize: 30, fontWeight: 700 }}>Let me know</h1>
-                        <p style={{ color: '#9ca3af', fontSize: 14 }}>Set where you want completion alerts (Email or WhatsApp Web).</p>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Set where you want completion alerts (Email or WhatsApp Web).</p>
                     </div>
                 </div>
 
-                <div style={{ border: '1px solid #ffffff1a', borderRadius: 14, background: '#0c0e13', padding: 18 }}>
+                <div style={{ border: '1px solid var(--border-dim)', borderRadius: 18, background: 'var(--bg-card)', padding: 22, boxShadow: 'var(--shadow-sm)' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, marginBottom: 16, cursor: 'pointer' }}>
                         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
                         Enable completion notifications (auto trigger wiring next)
@@ -85,10 +85,10 @@ export default function NotifyView() {
                         <button
                             onClick={() => setChannel('whatsapp')}
                             style={{
-                                border: '1px solid #ffffff24',
-                                background: channel === 'whatsapp' ? '#163021' : '#151922',
-                                color: '#fff',
-                                borderRadius: 8,
+                                border: `1px solid ${channel === 'whatsapp' ? 'var(--border-bright)' : 'var(--border-base)'}`,
+                                background: channel === 'whatsapp' ? '#f5f5f5' : 'var(--bg-input)',
+                                color: channel === 'whatsapp' ? 'var(--text-inverse)' : '#fff',
+                                borderRadius: 10,
                                 padding: '9px 12px',
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -101,10 +101,10 @@ export default function NotifyView() {
                         <button
                             onClick={() => setChannel('email')}
                             style={{
-                                border: '1px solid #ffffff24',
-                                background: channel === 'email' ? '#1e293b' : '#151922',
-                                color: '#fff',
-                                borderRadius: 8,
+                                border: `1px solid ${channel === 'email' ? 'var(--border-bright)' : 'var(--border-base)'}`,
+                                background: channel === 'email' ? '#f5f5f5' : 'var(--bg-input)',
+                                color: channel === 'email' ? 'var(--text-inverse)' : '#fff',
+                                borderRadius: 10,
                                 padding: '9px 12px',
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -118,22 +118,22 @@ export default function NotifyView() {
 
                     {channel === 'email' ? (
                         <div style={{ marginBottom: 16 }}>
-                            <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 6 }}>Email address</div>
+                            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>Email address</div>
                             <input
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 placeholder="you@example.com"
-                                style={{ width: '100%', background: '#0b0f16', border: '1px solid #ffffff1a', color: '#fff', borderRadius: 8, padding: '10px 12px' }}
+                                style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border-dim)', color: '#fff', borderRadius: 10, padding: '10px 12px' }}
                             />
                         </div>
                     ) : (
                         <div style={{ marginBottom: 16 }}>
-                            <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 6 }}>WhatsApp number (country code)</div>
+                            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>WhatsApp number (country code)</div>
                             <input
                                 value={whatsapp}
                                 onChange={(e) => setWhatsapp(e.target.value)}
                                 placeholder="919876543210"
-                                style={{ width: '100%', background: '#0b0f16', border: '1px solid #ffffff1a', color: '#fff', borderRadius: 8, padding: '10px 12px' }}
+                                style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border-dim)', color: '#fff', borderRadius: 10, padding: '10px 12px' }}
                             />
                         </div>
                     )}
@@ -141,13 +141,13 @@ export default function NotifyView() {
                     <div style={{ display: 'flex', gap: 10 }}>
                         <button
                             onClick={saveConfig}
-                            style={{ background: '#f3f4f6', color: '#0b0b0e', border: 'none', borderRadius: 8, padding: '10px 14px', fontWeight: 700, cursor: 'pointer' }}
+                            style={{ background: '#f3f4f6', color: '#0b0b0e', border: 'none', borderRadius: 10, padding: '10px 14px', fontWeight: 700, cursor: 'pointer' }}
                         >
                             Save
                         </button>
                         <button
                             onClick={sendTest}
-                            style={{ background: '#1f2430', color: '#e5e7eb', border: '1px solid #ffffff1f', borderRadius: 8, padding: '10px 14px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                            style={{ background: 'var(--bg-input)', color: '#e5e7eb', border: '1px solid var(--border-base)', borderRadius: 10, padding: '10px 14px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
                         >
                             <Send size={15} /> Send test
                         </button>

@@ -13,38 +13,38 @@ export default function CalendarView() {
     }));
 
     return (
-        <div className="calendar-view" style={{ padding: '40px', background: '#0a0a0b', minHeight: '100%', color: 'white' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '32px' }}>
+        <div className="calendar-view content-area" style={{ minHeight: '100%' }}>
+            <div className="page-header" style={{ marginBottom: '32px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <h1 style={{ fontSize: '28px', fontWeight: 700 }}>Calendar</h1>
+                    <h1 className="page-title" style={{ fontSize: '28px' }}>Calendar</h1>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={{ background: 'white', color: 'black', border: 'none', padding: '8px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <CalendarIcon size={16} /> Schedule post
                         </button>
-                        <button style={{ background: '#1f1f23', border: '1px solid #ffffff1a', color: 'white', padding: '8px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <Upload size={16} /> Upload local video
                         </button>
                     </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#111113', padding: '6px 12px', borderRadius: '8px', border: '1px solid #ffffff1a', fontSize: '12px', color: '#9ca3af' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-card)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border-dim)', fontSize: '12px', color: 'var(--text-secondary)' }}>
                     <Globe size={14} /> GMT+05
                 </div>
             </div>
 
             {/* Calendar Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '32px', marginBottom: '20px' }}>
-                <ChevronLeft size={20} color="#4b5563" style={{ cursor: 'pointer' }} />
+                <ChevronLeft size={20} color="var(--text-secondary)" style={{ cursor: 'pointer' }} />
                 <span style={{ fontSize: '16px', fontWeight: 700 }}>{currentYear}{currentMonth}</span>
-                <ChevronRight size={20} color="#4b5563" style={{ cursor: 'pointer' }} />
+                <ChevronRight size={20} color="var(--text-secondary)" style={{ cursor: 'pointer' }} />
             </div>
 
             {/* Calendar Grid */}
-            <div style={{ border: '1px solid #ffffff1a', borderRadius: '12px', overflow: 'hidden' }}>
+            <div style={{ border: '1px solid var(--border-dim)', borderRadius: '13px', overflow: 'hidden', background: 'var(--bg-card)' }}>
                 {/* Days Label */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', borderBottom: '1px solid #ffffff0a', background: '#0a0a0b' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', borderBottom: '1px solid var(--border-dim)', background: '#050505' }}>
                     {days.map(day => (
-                        <div key={day} style={{ padding: '12px', textAlign: 'center', fontSize: '12px', fontWeight: 600, color: '#9ca3af' }}>{day}</div>
+                        <div key={day} style={{ padding: '12px', textAlign: 'center', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>{day}</div>
                     ))}
                 </div>
 
@@ -52,14 +52,14 @@ export default function CalendarView() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridAutoRows: '140px' }}>
                     {calendarDays.map((d, i) => (
                         <div key={i} style={{
-                            borderRight: (i + 1) % 7 === 0 ? 'none' : '1px solid #ffffff0a',
-                            borderBottom: i < 28 ? '1px solid #ffffff0a' : 'none',
+                            borderRight: (i + 1) % 7 === 0 ? 'none' : '1px solid var(--border-dim)',
+                            borderBottom: i < 28 ? '1px solid var(--border-dim)' : 'none',
                             padding: '12px',
-                            background: d.isCurrent ? '#ffffff03' : 'transparent',
+                            background: d.isCurrent ? 'rgba(255,255,255,0.04)' : 'transparent',
                             position: 'relative'
                         }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                <span style={{ fontSize: '12px', color: d.isCurrent ? 'white' : '#6b7280', fontWeight: d.isCurrent ? 700 : 400 }}>{d.month} {d.day}</span>
+                                <span style={{ fontSize: '12px', color: d.isCurrent ? 'white' : 'var(--text-secondary)', fontWeight: d.isCurrent ? 700 : 400 }}>{d.month} {d.day}</span>
                                 {d.isCurrent && <div style={{ width: 4, height: 4, background: 'white', borderRadius: '50%' }} />}
                             </div>
                         </div>

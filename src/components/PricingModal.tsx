@@ -96,9 +96,9 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                         width: 36,
                         height: 36,
                         borderRadius: 8,
-                        border: '1px solid #ffffff24',
-                        background: '#12141a',
-                        color: '#e5e7eb',
+                        border: '1px solid var(--border-base)',
+                        background: 'var(--bg-input)',
+                        color: 'var(--text-primary)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -112,7 +112,7 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                 <h1 style={{ fontSize: 40, fontWeight: 700, textAlign: 'center', margin: '18px 0 16px' }}>Upgrade your plan</h1>
 
                 <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
-                    <div style={{ background: '#2a2d33', borderRadius: 999, padding: 4, display: 'inline-flex', gap: 4, border: '1px solid #ffffff20' }}>
+                    <div style={{ background: 'var(--bg-input)', borderRadius: 999, padding: 4, display: 'inline-flex', gap: 4, border: '1px solid var(--border-base)' }}>
                         <button
                             onClick={() => setBillingMode('monthly')}
                             style={billingMode === 'monthly' ? activePillStyle : pillStyle}
@@ -123,7 +123,7 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                             onClick={() => setBillingMode('yearly')}
                             style={billingMode === 'yearly' ? activePillStyle : pillStyle}
                         >
-                            Yearly <span style={{ color: '#34d399' }}>(up to 50% off)</span>
+                            Yearly <span style={{ color: 'var(--text-secondary)' }}>(up to 50% off)</span>
                         </button>
                     </div>
                 </div>
@@ -151,7 +151,7 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                             {proBaseFeatures.map((feature, idx) => (
                                 <FeatureRow key={feature} text={feature} emphasized={idx === 0} />
                             ))}
-                            <div style={{ color: '#9ca3af', fontSize: 14, marginTop: 2 }}>Everything in Starter plan, plus:</div>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: 14, marginTop: 2 }}>Everything in Starter plan, plus:</div>
                             {proPlusFeatures.map((feature) => (
                                 <FeatureRow key={feature} text={feature} />
                             ))}
@@ -162,7 +162,7 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                         <div style={{ marginBottom: 12 }}>
                             <h2 style={{ fontSize: 38, fontWeight: 700, marginBottom: 6 }}>Business</h2>
                             <div style={{ fontSize: 48, fontWeight: 700, lineHeight: 1.05, marginBottom: 6 }}>Let's talk</div>
-                            <div style={{ color: '#9ca3af', fontSize: 16 }}>Fit for business, dressed in a tux</div>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: 16 }}>Fit for business, dressed in a tux</div>
                         </div>
                         <PlanButton label="Contact us" primary={false} />
                         <Separator />
@@ -177,9 +177,9 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
                 <div style={{ display: 'flex', justifyContent: 'center', marginTop: 18 }}>
                     <button
                         style={{
-                            background: '#22252b',
-                            border: '1px solid #ffffff1f',
-                            color: '#e5e7eb',
+                            background: 'var(--bg-input)',
+                            border: '1px solid var(--border-base)',
+                            color: 'var(--text-primary)',
                             padding: '10px 16px',
                             borderRadius: 8,
                             fontSize: 14,
@@ -197,7 +197,7 @@ export default function PricingModal({ onClose }: { onClose: () => void }) {
 
             <style>{`
                 .pricing-shell::-webkit-scrollbar { width: 8px; }
-                .pricing-shell::-webkit-scrollbar-thumb { background: #2e3440; border-radius: 999px; }
+                .pricing-shell::-webkit-scrollbar-thumb { background: #2f2f2f; border-radius: 999px; }
                 @media (max-width: 1100px) {
                     .pricing-grid {
                         grid-template-columns: 1fr !important;
@@ -212,11 +212,11 @@ function PlanHeader({ title, oldPrice, price, billedText }: { title: string; old
     return (
         <div style={{ marginBottom: 14 }}>
             <h2 style={{ fontSize: 40, fontWeight: 700, marginBottom: 2 }}>{title}</h2>
-            <div style={{ fontSize: 31, color: '#8b8e94', textDecoration: 'line-through', fontWeight: 600 }}>{oldPrice}</div>
-            <div style={{ fontSize: 52, fontWeight: 800, color: '#34d399', lineHeight: 1.05 }}>
-                {price}<span style={{ color: '#9ca3af', fontSize: 30, fontWeight: 600 }}>/mo</span>
+            <div style={{ fontSize: 31, color: 'var(--text-tertiary)', textDecoration: 'line-through', fontWeight: 600 }}>{oldPrice}</div>
+            <div style={{ fontSize: 52, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.05 }}>
+                {price}<span style={{ color: 'var(--text-secondary)', fontSize: 30, fontWeight: 600 }}>/mo</span>
             </div>
-            <div style={{ fontSize: 14, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {billedText} <Info size={14} />
             </div>
         </div>
@@ -228,9 +228,9 @@ function PlanButton({ label, primary }: { label: string; primary: boolean }) {
         <button
             style={{
                 width: '100%',
-                background: primary ? '#f3f4f6' : '#23262d',
+                background: primary ? '#f3f4f6' : 'var(--bg-input)',
                 color: primary ? '#0f1115' : '#f3f4f6',
-                border: 'none',
+                border: primary ? 'none' : '1px solid var(--border-base)',
                 borderRadius: 10,
                 fontWeight: 600,
                 fontSize: 28,
@@ -247,7 +247,7 @@ function FeatureRow({ text, emphasized = false, muted = false }: { text: string;
     return (
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
             <Check size={18} color={muted ? '#6b7280' : '#ffffff'} style={{ marginTop: 2, flexShrink: 0 }} />
-            <div style={{ color: muted ? '#9ca3af' : '#e5e7eb', fontSize: 15, lineHeight: 1.35, fontWeight: emphasized ? 700 : 500 }}>
+            <div style={{ color: muted ? 'var(--text-secondary)' : '#e5e7eb', fontSize: 15, lineHeight: 1.35, fontWeight: emphasized ? 700 : 500 }}>
                 {text}
             </div>
         </div>

@@ -202,7 +202,7 @@ export const defaultExportSettings: ExportSettings = {
     platform: 'tiktok',
     captions: {
         enabled: true,
-        style: 'tiktok',
+        style: 'dream-classic',
         fontSize: 42,
         fontFamily: 'Inter',
         color: '#FFFFFF',

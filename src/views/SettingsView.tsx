@@ -19,7 +19,7 @@ export default function SettingsView({ systemStatus }: SettingsViewProps) {
                 {/* AI Models */}
                 <div className="settings-section">
                     <div className="settings-section-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                        <Cpu size={18} style={{ color: 'var(--accent-primary)' }} />
+                        <Cpu size={18} />
                         AI Models & Inference
                     </div>
 
@@ -65,7 +65,7 @@ export default function SettingsView({ systemStatus }: SettingsViewProps) {
                 {/* Hardware */}
                 <div className="settings-section">
                     <div className="settings-section-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                        <HardDrive size={18} style={{ color: 'var(--accent-secondary)' }} />
+                        <HardDrive size={18} />
                         Hardware Acceleration
                     </div>
 
@@ -87,7 +87,7 @@ export default function SettingsView({ systemStatus }: SettingsViewProps) {
                 {/* Data Management */}
                 <div className="settings-section">
                     <div className="settings-section-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                        <Database size={18} style={{ color: 'var(--accent-warning)' }} />
+                        <Database size={18} />
                         Data Management
                     </div>
 

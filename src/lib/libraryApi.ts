@@ -43,6 +43,13 @@ interface UploadProjectPayload {
     sourceBytes?: number[];
 }
 
+export interface LinkInfo {
+    title?: string;
+    duration?: number;
+    maxHeight: number;
+    qualityOptions: number[];
+}
+
 const assetUrl = (path: string): string => {
     if (!path) return '';
     if (path.startsWith('blob:') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('asset:')) {
@@ -111,21 +118,61 @@ export async function createUploadProject(payload: UploadProjectPayload): Promis
     return mapProject(row);
 }
 
-export async function createLinkProject(url: string): Promise<Project> {
+export async function createLinkProject(url: string, quality = 1080): Promise<Project> {
     if (!isTauri()) {
-        throw new Error('Desktop mode is required for URL imports.');
+        const response = await fetch('/api/link-import', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url, quality }),
+        });
+
+        const payload = await response.json().catch(() => ({} as { error?: string }));
+        if (!response.ok) {
+            throw new Error(payload.error || `URL import failed with status ${response.status}.`);
+        }
+
+        return mapProject(payload as StoredProject);
     }
     const row = await invoke<StoredProject>('create_link_project', { url });
     return mapProject(row);
 }
 
+export async function fetchLinkInfo(url: string): Promise<LinkInfo> {
+    if (!isTauri()) {
+        const response = await fetch('/api/link-info', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        const payload = await response.json().catch(() => ({} as { error?: string }));
+        if (!response.ok) {
+            throw new Error(payload.error || `Link info failed with status ${response.status}.`);
+        }
+        return payload as LinkInfo;
+    }
+
+    // Native path can be wired later; for now keep consistent behavior.
+    return {
+        maxHeight: 1440,
+        qualityOptions: [480, 720, 1080],
+    };
+}
+
 export async function clearProjectClips(projectId: string): Promise<void> {
-    if (!isTauri()) return;
+    if (!isTauri()) {
+        await fetch('/api/clear-project-clips', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+        }).catch(() => undefined);
+        return;
+    }
     await invoke('clear_project_clips', { projectId });
 }
 
 export async function generateClipNative(args: {
     projectId: string;
+    sourcePath?: string;
     startMs: number;
     endMs: number;
     index: number;
@@ -135,7 +182,16 @@ export async function generateClipNative(args: {
     selected: boolean;
 }): Promise<ClipSuggestion> {
     if (!isTauri()) {
-        throw new Error('Desktop mode is required for native clip generation.');
+        const response = await fetch('/api/generate-clip', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(args),
+        });
+        const payload = await response.json().catch(() => ({} as { error?: string }));
+        if (!response.ok) {
+            throw new Error(payload.error || `Clip generation failed with status ${response.status}.`);
+        }
+        return mapClip(payload as StoredClip);
     }
     const row = await invoke<StoredClip>('generate_clip_native', args);
     return mapClip(row);

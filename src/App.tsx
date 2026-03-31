@@ -10,7 +10,6 @@ import SocialAccountsView from './views/SocialAccountsView';
 import NotifyView from './views/NotifyView';
 import WorkflowView from './views/WorkflowView';
 import SettingsView from './views/SettingsView';
-import PricingModal from './components/PricingModal';
 import ClipsListView from './views/ClipsListView';
 import { ViewType, AppState, Project, ClipSuggestion } from './types';
 import { defaultExportSettings, defaultSystemStatus } from './store';
@@ -25,7 +24,7 @@ import {
   listProjects,
 } from './lib/libraryApi';
 import { isTauri } from '@tauri-apps/api/core';
-import { Bell, Zap } from 'lucide-react';
+import './styles/opus-fonts.css';
 import './index.css';
 
 const VALID_VIEWS: ViewType[] = [
@@ -55,7 +54,6 @@ function viewToHash(view: ViewType): string {
 function App() {
   const initialViewRef = useRef<ViewType>(parseViewFromHash(window.location.hash));
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
-  const [showPricingModal, setShowPricingModal] = useState(false);
   const [state, setState] = useState<AppState>({
     currentView: initialViewRef.current,
     projects: [],
@@ -235,10 +233,10 @@ function App() {
     })();
   }, []);
 
-  const handleImportFromLink = useCallback((url: string) => {
+  const handleImportFromLink = useCallback((url: string, quality = 1080) => {
     (async () => {
       try {
-        const project = await createLinkProject(url);
+        const project = await createLinkProject(url, quality);
         const projectClips = await listProjectClips(project.id);
         setState((s) => ({
           ...s,
@@ -339,33 +337,20 @@ function App() {
     handleViewChange(fallback);
   }, [handleViewChange]);
 
+  const useResultsLayout = state.currentView === 'clips-list';
+
   return (
-    <div className="app-shell">
-      <Sidebar
-        activeView={state.currentView === 'workflow' || state.currentView === 'clips-list' ? 'home' : state.currentView}
-        onViewChange={handleViewChange}
-        isExpanded={isSidebarExpanded}
-        onToggle={toggleSidebar}
-        onShowPricing={() => setShowPricingModal(true)}
-      />
+    <div className={`app-shell ${useResultsLayout ? 'app-shell-results' : ''}`}>
+      {!useResultsLayout && (
+        <Sidebar
+          activeView={state.currentView === 'workflow' || state.currentView === 'clips-list' ? 'home' : state.currentView}
+          onViewChange={handleViewChange}
+          isExpanded={isSidebarExpanded}
+          onToggle={toggleSidebar}
+        />
+      )}
 
-      {showPricingModal && <PricingModal onClose={() => setShowPricingModal(false)} />}
-
-      <main className="main-content">
-        {/* Top Navbar overlapping the content (Only on Home) */}
-        {state.currentView === 'home' && (
-          <header className="top-nav">
-            <div className="notif-btn">
-              <Bell size={20} color="#9ca3af" />
-              <div className="notif-badge">17</div>
-            </div>
-            <div className="credits-badge">
-              <Zap size={16} fill="#f59e0b" color="#f59e0b" /> 4
-            </div>
-            <button className="add-credits-btn">Add more credits</button>
-          </header>
-        )}
-
+      <main className={`main-content ${useResultsLayout ? 'main-content-results' : ''}`}>
         {state.currentView === 'home' && (
           <HomeView
             onFileSelect={handleFileSelect}
@@ -404,6 +389,7 @@ function App() {
               await clearProjectClips(projectId);
             }}
             onBack={() => handleViewChange(state.activeProject ? 'workflow' : 'home')}
+            onViewChange={handleViewChange}
           />
         )}
 

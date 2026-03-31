@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
     Link as LinkIcon,
     Upload,
@@ -6,42 +7,46 @@ import {
     Sparkles,
     ClosedCaption,
     Crop,
-    Circle,
-    PlayCircle,
     X,
-    MoreHorizontal,
-    Trash2
+    Trash2,
+    Video,
+    Clock,
+    FileVideo,
+    Folder
 } from 'lucide-react';
 import CustomArrow from '../components/CustomArrow';
 import { Project } from '../types';
+import { fetchLinkInfo, type LinkInfo } from '../lib/libraryApi';
 
 interface HomeViewProps {
     onFileSelect: (file: File) => void;
     projects: Project[];
     onOpenProject: (projectId: string) => void;
-    onImportFromLink: (url: string) => void;
+    onImportFromLink: (url: string, quality: number) => void;
     onDeleteProject: (projectId: string) => void;
 }
 
 type FeatureModalType = 'long' | 'captions' | 'reframe' | null;
+const LINK_HISTORY_KEY = 'clipforge.link-history.v2';
+const MAX_LINK_HISTORY = 8;
 
 const featureModalContent: Record<Exclude<FeatureModalType, null>, { title: string; subtitle: string; placeholder: string; helper?: string }> = {
     long: {
-        title: 'Long to shorts',
-        subtitle: 'AI finds hooks, highlights, and turns your video into viral shorts.',
-        placeholder: 'Drop a Rumble link'
+        title: 'Long to Shorts',
+        subtitle: 'Our AI engine analyzes hooks and retention to generate viral shorts from any long-form video.',
+        placeholder: 'Drop a YouTube or Rumble link'
     },
     captions: {
-        title: 'AI Captions',
-        subtitle: 'Add stylish captions or translate your content with one click.',
-        placeholder: 'Drop a YouTube link',
-        helper: 'You can upload videos up to 120 minutes long.'
+        title: 'Dynamic AI Captions',
+        subtitle: 'Generate high-retention animated captions automatically in 30+ languages.',
+        placeholder: 'Drop a video link',
+        helper: 'Supports videos up to 120 minutes in 4K resolution.'
     },
     reframe: {
-        title: 'AI Reframe',
-        subtitle: 'Let AI automatically reframe your content to fit any social platform. Save time on manual reframing',
-        placeholder: 'Drop a YouTube link',
-        helper: 'You can upload videos up to 120 minutes long.'
+        title: 'Smart Auto-Reframe',
+        subtitle: 'Effortlessly track subjects and crop your landscape video for TikTok, Reels, and Shorts.',
+        placeholder: 'Drop a video link',
+        helper: 'Supports videos up to 120 minutes in 4K resolution.'
     }
 };
 
@@ -49,22 +54,65 @@ function formatUploadedAgo(createdAt: string): string {
     const created = new Date(createdAt).getTime();
     const now = Date.now();
     const diffDays = Math.max(1, Math.floor((now - created) / (1000 * 60 * 60 * 24)));
-    return `${diffDays} day${diffDays > 1 ? 's' : ''} before expiring`;
+    return `${diffDays}d ago`;
 }
 
 export default function HomeView({ onFileSelect, projects, onOpenProject, onImportFromLink, onDeleteProject }: HomeViewProps) {
     const [featureModal, setFeatureModal] = useState<FeatureModalType>(null);
-    const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
-    const [autoImportEnabled, setAutoImportEnabled] = useState(false);
     const [sourceUrl, setSourceUrl] = useState('');
+    const [linkQuality, setLinkQuality] = useState<number>(1080);
+    const [linkInfo, setLinkInfo] = useState<LinkInfo | null>(null);
+    const [linkInfoLoading, setLinkInfoLoading] = useState(false);
+    const [linkInfoError, setLinkInfoError] = useState<string | null>(null);
+    const [linkHistory, setLinkHistory] = useState<string[]>([]);
+    const [showLinkHistory, setShowLinkHistory] = useState(false);
     const [isDragActive, setIsDragActive] = useState(false);
+    
     const modalFileInputRef = useRef<HTMLInputElement>(null);
     const mainFileInputRef = useRef<HTMLInputElement>(null);
+    const linkInfoRequestId = useRef(0);
 
-    const handleModalUpload = () => {
-        modalFileInputRef.current?.click();
+    // Load History
+    useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem(LINK_HISTORY_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                setLinkHistory(parsed.filter((item) => typeof item === 'string').slice(0, MAX_LINK_HISTORY));
+            }
+        } catch (error) {
+            console.warn('Failed to load link history:', error);
+        }
+    }, []);
+
+    const filteredHistory = useMemo(() => {
+        const q = sourceUrl.trim().toLowerCase();
+        if (!q) return linkHistory;
+        return linkHistory.filter((item) => item.toLowerCase().includes(q));
+    }, [linkHistory, sourceUrl]);
+
+    const hasCandidateLink = useMemo(() => /^https?:\/\//i.test(sourceUrl.trim()), [sourceUrl]);
+
+    const saveLinkHistory = (url: string) => {
+        const clean = url.trim();
+        if (!clean) return;
+        const deduped = [clean, ...linkHistory.filter((item) => item !== clean)].slice(0, MAX_LINK_HISTORY);
+        setLinkHistory(deduped);
+        try {
+            window.localStorage.setItem(LINK_HISTORY_KEY, JSON.stringify(deduped));
+        } catch (error) {
+            console.warn('Failed to persist link history');
+        }
     };
 
+    const clearLinkHistory = () => {
+        setLinkHistory([]);
+        try { window.localStorage.removeItem(LINK_HISTORY_KEY); } catch (e) {}
+    };
+
+    // File Handlers
+    const handleModalUpload = () => modalFileInputRef.current?.click();
     const handleModalFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -72,10 +120,7 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         onFileSelect(file);
     };
 
-    const openUploadPicker = () => {
-        mainFileInputRef.current?.click();
-    };
-
+    const openUploadPicker = () => mainFileInputRef.current?.click();
     const handleMainFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -94,273 +139,342 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         onFileSelect(file);
     };
 
+    // Link Processing
     const handleGetClips = () => {
         if (sourceUrl.trim()) {
-            onImportFromLink(sourceUrl.trim());
+            if (linkInfoLoading) return;
+            if (hasCandidateLink && !linkInfo) {
+                alert(linkInfoError || 'Could not verify link. Please try again.');
+                return;
+            }
+            saveLinkHistory(sourceUrl.trim());
+            onImportFromLink(sourceUrl.trim(), linkQuality);
             setSourceUrl('');
+            setShowLinkHistory(false);
+            setLinkInfo(null);
+            setLinkInfoError(null);
             return;
         }
         openUploadPicker();
     };
 
+    useEffect(() => {
+        const trimmed = sourceUrl.trim();
+        if (!trimmed) {
+            setLinkInfo(null); setLinkInfoError(null); setLinkQuality(1080);
+            return;
+        }
+
+        let parsedUrl: URL;
+        try { parsedUrl = new URL(trimmed); } catch { return; }
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)) return;
+
+        const requestId = ++linkInfoRequestId.current;
+        setLinkInfoLoading(true); setLinkInfoError(null);
+
+        const timer = window.setTimeout(async () => {
+            try {
+                const info = await fetchLinkInfo(trimmed);
+                if (linkInfoRequestId.current !== requestId) return;
+                setLinkInfo(info);
+                const options = (info.qualityOptions ?? []).filter((q) => Number.isFinite(q) && q > 0);
+                if (!options.length) setLinkQuality(Math.max(240, Math.min(1440, Math.floor(info.maxHeight || 720))));
+                else setLinkQuality(options[options.length - 1]);
+            } catch (error) {
+                if (linkInfoRequestId.current !== requestId) return;
+                setLinkInfo(null);
+                setLinkInfoError(error instanceof Error ? error.message : String(error));
+            } finally {
+                if (linkInfoRequestId.current === requestId) setLinkInfoLoading(false);
+            }
+        }, 400);
+
+        return () => window.clearTimeout(timer);
+    }, [sourceUrl]);
+
+    const displayedQualityOptions = useMemo(() => linkInfo?.qualityOptions ?? [], [linkInfo]);
+    const recentProjects = projects.slice(0, 4);
+
     return (
         <div className="dashboard-hero">
-            <div className="bg-text">OpusClip</div>
-
-            <div className="logo-text">OpusClip</div>
-
-            <div
-                className="upload-box"
-                style={{
-                    borderColor: isDragActive ? '#3b82f6' : '#ffffff1f'
-                }}
-                onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDragActive(true);
-                }}
-                onDragLeave={(e) => {
-                    e.preventDefault();
-                    setIsDragActive(false);
-                }}
-                onDrop={handleDrop}
-            >
-                <div className="url-input-container" style={{ marginBottom: 12 }}>
-                    <LinkIcon size={17} color="#8b93a3" />
-                    <input
-                        type="text"
-                        placeholder="Drop a Rumble link"
-                        value={sourceUrl}
-                        onChange={(e) => setSourceUrl(e.target.value)}
-                    />
-                </div>
-
-                <div className="upload-actions" style={{ marginBottom: 6 }}>
-                    <button className="upload-action-btn" onClick={openUploadPicker}>
-                        <Upload size={16} /> Upload
-                    </button>
-                    <button className="upload-action-btn" onClick={() => alert('Google Drive integration can be connected next.')}>
-                        <Triangle size={16} /> Google Drive
-                    </button>
-                </div>
-
-                <button className="get-clips-btn" onClick={handleGetClips}>
-                    Get clips in 1 click
-                </button>
-            </div>
-
-            <input
-                ref={mainFileInputRef}
-                type="file"
-                accept="video/*"
-                onChange={handleMainFileChange}
-                style={{ display: 'none' }}
-            />
-
-            <div className="feature-toggles">
-                <div className="feature-toggle" onClick={() => setFeatureModal('long')}>
-                    <div className="feature-icon-wrapper" style={{ background: '#272015' }}>
-                        <Sparkles size={24} color="#f59e0b" fill="#f59e0b" />
-                    </div>
-                    <span>Long to shorts</span>
-                </div>
-                <div className="feature-toggle" onClick={() => setFeatureModal('captions')}>
-                    <div className="feature-icon-wrapper" style={{ background: '#14251c' }}>
-                        <ClosedCaption size={24} color="#22c55e" />
-                    </div>
-                    <span>AI Captions</span>
-                </div>
-                <div className="feature-toggle" onClick={() => setFeatureModal('reframe')}>
-                    <div className="feature-icon-wrapper" style={{ background: '#181e2b' }}>
-                        <Crop size={24} color="#3b82f6" />
-                    </div>
-                    <span>AI Reframe</span>
-                </div>
-            </div>
-
-            <div className="projects-section">
-                <div className="projects-header">
-                    <div className="projects-tabs">
-                        <button className="project-tab active">All projects ({projects.length})</button>
-                        <button className="project-tab">Saved projects (0)</button>
-                    </div>
-
-                    <div className="projects-controls">
-                        <span className="usage-text">0 GB / 100 GB</span>
-                        <div className="toggle-pill" onClick={() => setAutoSaveEnabled((v) => !v)}>
-                            <Circle size={8} fill={autoSaveEnabled ? '#22c55e' : '#9ca3af'} color={autoSaveEnabled ? '#22c55e' : '#9ca3af'} /> Auto-save
-                        </div>
-                        <div className="toggle-pill" onClick={() => setAutoImportEnabled((v) => !v)}>
-                            <Circle size={8} fill={autoImportEnabled ? '#22c55e' : '#9ca3af'} color={autoImportEnabled ? '#22c55e' : '#9ca3af'} /> Auto-import <span style={{ fontSize: 10, opacity: 0.6 }}>Beta</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="projects-grid">
-                    {projects.length ? projects.map((project) => (
-                        <div key={project.id} className="project-card" style={{ width: 255 }} onClick={() => onOpenProject(project.id)}>
-                            <div className="project-thumb">
-                                {project.thumbnailUrl ? (
-                                    <img
-                                        src={project.thumbnailUrl}
-                                        alt={project.name}
-                                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                    />
-                                ) : (
-                                    <video
-                                        src={`${project.filePath}#t=1`}
-                                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                        muted
-                                        preload="metadata"
-                                    />
-                                )}
-                                <div className="project-badge">{(project.clipCount ?? 0) > 0 ? `${project.clipCount} clips` : 'New'}</div>
-                                <div className="project-expiry">{formatUploadedAgo(project.createdAt)}</div>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                                <div className="project-title">{project.name}</div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            const shouldDelete = window.confirm(`Delete project "${project.name}" and all its clips?`);
-                                            if (shouldDelete) onDeleteProject(project.id);
-                                        }}
-                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#ef4444', display: 'flex', alignItems: 'center' }}
-                                        aria-label="Delete project"
-                                        title="Delete project"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
-                                    <MoreHorizontal size={16} color="#9ca3af" />
-                                </div>
-                            </div>
-                            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
-                                {project.sourceType === 'link' ? 'Link source' : 'Uploaded source'}
-                            </div>
-                        </div>
-                    )) : (
-                        <div style={{
-                            width: '100%',
-                            border: '1px dashed #ffffff2a',
-                            borderRadius: 10,
-                            padding: '16px 14px',
-                            color: '#9ca3af',
-                            fontSize: 13
-                        }}>
-                            No projects yet. Upload a video or import a link to create your first project.
-                        </div>
-                    )}
-                </div>
-
-                <div className="master-section">
-                    <div className="master-title">MASTER OPUSCLIP</div>
-                    <div className="master-grid">
-                        {[
-                            { title: 'Turn Any Video Into Viral Shorts in Minutes', image: 'https://images.unsplash.com/photo-1542744173-05336fcc7ad4?w=400&h=220&fit=crop' },
-                            { title: '5 Top Features You Didn\'t Know About', image: 'https://images.unsplash.com/photo-1614283233556-f35b0c801ef1?w=400&h=220&fit=crop' },
-                            { title: 'Make 40 YouTube Shorts In 1 Hour', image: 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=400&h=220&fit=crop' },
-                            { title: 'Edit Faster with Keyboard Shortcuts', image: 'https://images.unsplash.com/photo-1604076913837-52ab5629fba9?w=400&h=220&fit=crop' }
-                        ].map((vid, i) => (
-                            <div key={i} className="project-thumb" style={{ height: 120, position: 'relative', cursor: 'pointer' }}>
-                                <img src={vid.image} alt={vid.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.25) 60%, rgba(0,0,0,0.1) 100%)', padding: 12 }}>
-                                    <div style={{ color: 'white', fontWeight: 600, fontSize: 14, width: '60%' }}>
-                                        {vid.title}
-                                    </div>
-                                </div>
-                                <PlayCircle size={28} color="white" fill="white" style={{ position: 'absolute', bottom: 10, left: 10 }} />
-                                {i === 3 && (
-                                    <div style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 28, height: 28, borderRadius: '50%', background: '#0b0b0e99', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                        <CustomArrow size={20} tone="light" />
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-
-            {featureModal && (
-                <div
-                    onClick={() => setFeatureModal(null)}
+            
+            <div className="bg-text">ClipForge</div>
+            
+            {/* Bento Grid Container */}
+            <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
+                gridTemplateRows: 'auto auto',
+                gap: '24px',
+                width: '100%',
+                maxWidth: '1200px',
+                zIndex: 1,
+                position: 'relative'
+            }}>
+                
+                {/* 1. Main Action Hero (Upload/Link) */}
+                <motion.div 
+                    className="upload-box"
+                    initial={{ opacity: 0, y: 30 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragActive(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDragActive(false); }}
+                    onDrop={handleDrop}
                     style={{
-                        position: 'fixed',
-                        inset: 0,
-                        background: 'rgba(0,0,0,0.7)',
-                        zIndex: 60,
-                        display: 'flex',
-                        alignItems: 'center',
+                        gridColumn: '1 / 2',
+                        gridRow: '1 / 2',
+                        borderColor: isDragActive ? 'var(--border-bright)' : 'var(--border-base)',
+                        maxWidth: '100%',
+                        height: '100%',
                         justifyContent: 'center',
-                        padding: 20
+                        display: 'flex',
+                        flexDirection: 'column'
                     }}
                 >
-                    <div
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                            width: '100%',
-                            maxWidth: 560,
-                            border: '1px solid #ffffff1f',
-                            borderRadius: 10,
-                            background: '#08090d',
-                            padding: 22,
-                            position: 'relative'
-                        }}
-                    >
-                        <button
-                            onClick={() => setFeatureModal(null)}
-                            style={{ position: 'absolute', top: 14, right: 14, background: 'transparent', border: 'none', color: '#6b7280', cursor: 'pointer' }}
-                        >
-                            <X size={18} />
-                        </button>
+                    <div style={{ marginBottom: 24 }}>
+                        <h1 className="logo-text" style={{ fontSize: 36, marginBottom: 8 }}>Forge Your Clips.</h1>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: 15, lineHeight: 1.5 }}>
+                            Drop a video link or upload a file to let AI find your best moments instantly.
+                        </p>
+                    </div>
 
-                        <h3 style={{ fontSize: 30, fontWeight: 700, marginBottom: 4 }}>{featureModalContent[featureModal].title}</h3>
-                        <p style={{ color: '#a1a1aa', fontSize: 15, lineHeight: 1.5, marginBottom: 18 }}>{featureModalContent[featureModal].subtitle}</p>
-
-                        {featureModal === 'captions' ? (
-                            <div style={{ marginBottom: 20, borderRadius: 12, overflow: 'hidden', display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 2 }}>
-                                {['3','12','22','42','89'].map((seed) => (
-                                    <img key={seed} src={`https://picsum.photos/seed/caption-${seed}/180/220`} alt="" style={{ width: '100%', height: 220, objectFit: 'cover' }} />
-                                ))}
-                            </div>
-                        ) : (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-                                <img src={`https://picsum.photos/seed/${featureModal}-left/300/160`} alt="" style={{ width: '100%', height: 150, borderRadius: 14, objectFit: 'cover' }} />
-                                <CustomArrow size={54} />
-                                <img src={`https://picsum.photos/seed/${featureModal}-right/300/160`} alt="" style={{ width: '100%', height: 150, borderRadius: 14, objectFit: 'cover' }} />
-                            </div>
-                        )}
-
-                        <div style={{ background: '#13151b', border: '1px solid #ffffff14', borderRadius: 10, padding: 16 }}>
-                            <div className="url-input-container" style={{ marginBottom: 12, background: '#0a0c10' }}>
-                                <LinkIcon size={18} color="#6b7280" />
-                                <input type="text" placeholder={featureModalContent[featureModal].placeholder} />
-                            </div>
-                            <div className="upload-actions" style={{ padding: 0 }}>
-                                <button className="upload-action-btn" onClick={handleModalUpload}>
-                                    <Upload size={16} /> Upload
-                                </button>
-                                <button className="upload-action-btn" onClick={() => alert('Google Drive integration can be connected next.')}>
-                                    <Triangle size={16} /> Google Drive
-                                </button>
-                            </div>
+                    <div className="link-history-anchor" style={{ marginBottom: '16px', zIndex: 10 }}>
+                        <div className="url-input-container">
+                            <LinkIcon size={18} color="var(--text-secondary)" />
+                            <input
+                                type="text"
+                                placeholder="Paste YouTube, Twitch, or Rumble link here..."
+                                value={sourceUrl}
+                                onChange={(e) => { setSourceUrl(e.target.value); setShowLinkHistory(true); }}
+                                onFocus={() => setShowLinkHistory(true)}
+                                onClick={() => setShowLinkHistory(true)}
+                                onBlur={() => window.setTimeout(() => setShowLinkHistory(false), 150)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleGetClips(); } }}
+                            />
+                            {hasCandidateLink && (
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                    {displayedQualityOptions.map((q) => (
+                                        <button 
+                                            key={q}
+                                            onClick={() => setLinkQuality(q)}
+                                            className={`quality-pill ${linkQuality === q ? 'active' : ''}`}
+                                            disabled={linkInfoLoading}
+                                        >
+                                            {q}p
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
 
-                        {featureModalContent[featureModal].helper && (
-                            <div style={{ color: '#a1a1aa', marginTop: 12, fontSize: 13 }}>
-                                {featureModalContent[featureModal].helper}
-                            </div>
+                        {/* Dropdown History */}
+                        <AnimatePresence>
+                            {showLinkHistory && filteredHistory.length > 0 && (
+                                <motion.div 
+                                    className="link-history-dropdown"
+                                    initial={{ opacity: 0, y: -10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95 }}
+                                >
+                                    <div className="link-history-header">
+                                        <span>Recent Imports</span>
+                                        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={clearLinkHistory}>Clear</button>
+                                    </div>
+                                    {filteredHistory.map((item) => (
+                                        <button
+                                            key={item} type="button" className="link-history-item"
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            onClick={() => { setSourceUrl(item); setShowLinkHistory(false); }}
+                                        >
+                                            {item}
+                                        </button>
+                                    ))}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <button className="get-clips-btn" onClick={handleGetClips} disabled={hasCandidateLink && linkInfoLoading}>
+                             {hasCandidateLink ? (linkInfoLoading ? 'Analyzing Link...' : 'Generate Clips') : 'Select File to Upload'}
+                        </button>
+                        
+                        {!hasCandidateLink && (
+                            <button 
+                                onClick={openUploadPicker}
+                                style={{
+                                    width: 48, height: 48, flexShrink: 0,
+                                    background: 'var(--bg-input)', border: '1px solid var(--border-bright)',
+                                    borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    cursor: 'pointer', color: 'var(--text-primary)', transition: 'all 0.2s'
+                                }}
+                                title="Upload File"
+                            >
+                                <Upload size={20} />
+                            </button>
                         )}
                     </div>
-                </div>
-            )}
+                </motion.div>
 
-            <input
-                ref={modalFileInputRef}
-                type="file"
-                accept="video/*"
-                onChange={handleModalFileChange}
-                style={{ display: 'none' }}
-            />
+                {/* 2. Micro Tools / Features (Right Top) */}
+                <motion.div 
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.5, delay: 0.1 }}
+                    style={{ gridColumn: '2 / 3', gridRow: '1 / 2', display: 'flex', flexDirection: 'column', gap: '16px' }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>AI Studio Tools</h3>
+                    </div>
+                    
+                    {[
+                        { id: 'long', title: 'Viral Shorts Generator', icon: Sparkles },
+                        { id: 'captions', title: 'Dynamic AI Captions', icon: ClosedCaption },
+                        { id: 'reframe', title: 'Smart Auto-Reframe', icon: Crop },
+                    ].map((tool) => (
+                        <div 
+                            key={tool.id}
+                            onClick={() => setFeatureModal(tool.id as FeatureModalType)}
+                            className="glass-raised"
+                            style={{
+                                padding: '16px 20px', borderRadius: 'var(--radius-md)',
+                                display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer',
+                                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.transform = 'translateX(6px)';
+                                e.currentTarget.style.borderColor = 'var(--border-bright)';
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.transform = 'translateX(0)';
+                                e.currentTarget.style.borderColor = 'var(--border-base)';
+                            }}
+                        >
+                            <div style={{ width: 40, height: 40, borderRadius: 10, background: `rgba(255,255,255,0.05)`, border: '1px solid var(--border-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <tool.icon size={20} color="var(--text-primary)" />
+                            </div>
+                            <div style={{ flex: 1 }}>
+                                <h4 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>{tool.title}</h4>
+                                <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Click to launch workflow</p>
+                            </div>
+                            <CustomArrow size={20} tone="light" />
+                        </div>
+                    ))}
+                </motion.div>
+
+                {/* 3. Recent Projects Bento Grid (Bottom Full Width) */}
+                <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5, delay: 0.2 }}
+                    style={{ gridColumn: '1 / 3', gridRow: '2 / 3', marginTop: 12 }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                        <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Folder size={18} color="var(--text-primary)" /> Recent Library
+                        </h3>
+                        {projects.length > 4 && (
+                            <button style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer' }}>View All</button>
+                        )}
+                    </div>
+
+                    {projects.length > 0 ? (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                            {recentProjects.map(project => (
+                                <div 
+                                    key={project.id} 
+                                    className="project-card"
+                                    onClick={() => onOpenProject(project.id)}
+                                >
+                                    <div className="project-thumb">
+                                        {project.thumbnailUrl ? (
+                                            <img src={project.thumbnailUrl} alt={project.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        ) : (
+                                            <video src={`${project.filePath}#t=1`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} muted preload="metadata" />
+                                        )}
+                                        <div className="project-badge" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                            {(project.clipCount ?? 0) > 0 ? `${project.clipCount} Clips` : 'Draft'}
+                                        </div>
+                                        <div className="project-expiry">
+                                            <Clock size={10} style={{ display: 'inline', marginRight: 4 }} />
+                                            {formatUploadedAgo(project.createdAt)}
+                                        </div>
+                                    </div>
+                                    
+                                    <div style={{ padding: '12px 14px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                                            <div className="project-title" style={{ fontSize: 14 }}>{project.name}</div>
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if(window.confirm(`Delete ${project.name}?`)) onDeleteProject(project.id);
+                                                }}
+                                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: 2 }}
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        </div>
+                                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                            <FileVideo size={12} /> {project.sourceType === 'link' ? 'URL Import' : 'Local File'}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="glass-panel" style={{ width: '100%', padding: '40px', textAlign: 'center', borderRadius: 'var(--radius-lg)', borderStyle: 'dashed', borderColor: 'var(--border-bright)' }}>
+                            <Video size={32} color="var(--text-secondary)" style={{ margin: '0 auto 12px' }} />
+                            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>No projects yet. Your freshly forged clips will appear here.</p>
+                        </div>
+                    )}
+                </motion.div>
+
+            </div>
+
+            {/* Feature Modal */}
+            <AnimatePresence>
+                {featureModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="feature-modal-backdrop"
+                        onClick={() => setFeatureModal(null)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
+                            className="feature-modal"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <button className="feature-modal-close" onClick={() => setFeatureModal(null)}><X size={16} /></button>
+                            <h3 style={{ fontSize: 26, fontWeight: 700, marginBottom: 8, color: '#fff' }}>{featureModalContent[featureModal!].title}</h3>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.5, marginBottom: 24 }}>{featureModalContent[featureModal!].subtitle}</p>
+
+                            <div className="feature-modal-inner-box">
+                                <div className="url-input-container" style={{ marginBottom: 16 }}>
+                                    <LinkIcon size={18} color="var(--text-secondary)" />
+                                    <input type="text" placeholder={featureModalContent[featureModal!].placeholder} />
+                                </div>
+                                <button className="get-clips-btn" style={{ height: 42, fontSize: 14 }}>Launch Workflow</button>
+                                
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-base)' }}>
+                                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase' }}>Or Import Via</span>
+                                    <button className="upload-action-btn" onClick={handleModalUpload}><Upload size={14} /> Local File</button>
+                                    <button className="upload-action-btn" onClick={() => alert('Coming soon')}><Triangle size={14} /> Drive</button>
+                                </div>
+                            </div>
+
+                            {featureModalContent[featureModal!].helper && (
+                                <div style={{ color: 'var(--text-tertiary)', marginTop: 16, fontSize: 12, textAlign: 'center' }}>
+                                    {featureModalContent[featureModal!].helper}
+                                </div>
+                            )}
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <input ref={mainFileInputRef} type="file" accept="video/*" onChange={handleMainFileChange} style={{ display: 'none' }} />
+            <input ref={modalFileInputRef} type="file" accept="video/*" onChange={handleModalFileChange} style={{ display: 'none' }} />
         </div>
     );
 }

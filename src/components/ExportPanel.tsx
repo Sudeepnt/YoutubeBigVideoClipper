@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Download, Smartphone, Monitor, Square, RectangleHorizontal, Type, Wand2 } from 'lucide-react';
 import { ExportSettings, AspectRatio, Platform } from '../types';
+import { CAPTION_PRESETS } from '../lib/captionPresets';
 
 interface ExportPanelProps {
     settings: ExportSettings;
@@ -10,10 +11,10 @@ interface ExportPanelProps {
 }
 
 const platforms: { id: Platform; label: string; icon: string; ratio: AspectRatio }[] = [
-    { id: 'tiktok', label: 'TikTok', icon: '📱', ratio: '9:16' },
-    { id: 'youtube-shorts', label: 'YT Shorts', icon: '🎬', ratio: '9:16' },
-    { id: 'instagram-reels', label: 'IG Reels', icon: '📸', ratio: '9:16' },
-    { id: 'twitter', label: 'Twitter/X', icon: '🐦', ratio: '16:9' },
+    { id: 'tiktok', label: 'TikTok', icon: 'TT', ratio: '9:16' },
+    { id: 'youtube-shorts', label: 'YT Shorts', icon: 'YS', ratio: '9:16' },
+    { id: 'instagram-reels', label: 'IG Reels', icon: 'IG', ratio: '9:16' },
+    { id: 'twitter', label: 'Twitter/X', icon: 'X', ratio: '16:9' },
 ];
 
 const aspectRatios: { id: AspectRatio; label: string; icon: React.ReactNode }[] = [
@@ -23,13 +24,11 @@ const aspectRatios: { id: AspectRatio; label: string; icon: React.ReactNode }[] 
     { id: '4:5', label: 'Portrait', icon: <RectangleHorizontal size={18} style={{ transform: 'rotate(90deg)' }} /> },
 ];
 
-const captionStyles = [
-    { id: 'tiktok', label: 'TikTok Bold', preview: 'white bold text + black outline' },
-    { id: 'minimal', label: 'Minimal', preview: 'clean white text' },
-    { id: 'bold', label: 'Impact', preview: 'BOLD uppercase text' },
-    { id: 'outline', label: 'Outline', preview: 'outlined text effect' },
-    { id: 'shadow', label: 'Shadow', preview: 'text with drop shadow' },
-];
+const captionStyles = CAPTION_PRESETS.map((preset) => ({
+    id: preset.id,
+    label: preset.label,
+    preview: `${preset.fontFamily} • ${preset.bold ? 'bold' : 'regular'} • ${preset.outline > 0 ? 'outline' : 'flat'}`,
+}));
 
 export default function ExportPanel({ settings, onSettingsChange, selectedClipCount, onExport }: ExportPanelProps) {
     const [isExporting, setIsExporting] = useState(false);
@@ -47,6 +46,7 @@ export default function ExportPanel({ settings, onSettingsChange, selectedClipCo
             <div className="export-section">
                 <div className="export-section-title">
                     <Wand2 size={16} style={{ color: 'var(--accent-primary)' }} />
+                    
                     Platform Preset
                 </div>
                 <div className="export-presets">
@@ -73,7 +73,7 @@ export default function ExportPanel({ settings, onSettingsChange, selectedClipCo
             {/* Aspect Ratio */}
             <div className="export-section">
                 <div className="export-section-title">
-                    <Monitor size={16} style={{ color: 'var(--accent-secondary)' }} />
+                    <Monitor size={16} />
                     Aspect Ratio
                 </div>
                 <div className="export-presets">
@@ -83,7 +83,7 @@ export default function ExportPanel({ settings, onSettingsChange, selectedClipCo
                             className={`export-preset ${settings.aspectRatio === ratio.id ? 'selected' : ''}`}
                             onClick={() => onSettingsChange({ ...settings, aspectRatio: ratio.id })}
                         >
-                            <span style={{ color: settings.aspectRatio === ratio.id ? 'var(--accent-primary)' : 'var(--text-tertiary)' }}>
+                            <span style={{ color: settings.aspectRatio === ratio.id ? 'currentColor' : 'var(--text-tertiary)' }}>
                                 {ratio.icon}
                             </span>
                             <span className="export-preset-name">{ratio.label}</span>
@@ -96,7 +96,7 @@ export default function ExportPanel({ settings, onSettingsChange, selectedClipCo
             {/* Quality & Format */}
             <div className="export-section">
                 <div className="export-section-title">
-                    <Download size={16} style={{ color: 'var(--accent-success)' }} />
+                    <Download size={16} />
                     Output Settings
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
@@ -131,7 +131,7 @@ export default function ExportPanel({ settings, onSettingsChange, selectedClipCo
             {/* Captions */}
             <div className="export-section">
                 <div className="export-section-title">
-                    <Type size={16} style={{ color: 'var(--accent-warning)' }} />
+                    <Type size={16} />
                     Caption Style
                 </div>
 

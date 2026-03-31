@@ -80,7 +80,7 @@ export interface CaptionSettings {
   animation: 'none' | 'word-by-word' | 'karaoke' | 'bounce';
 }
 
-export type CaptionStyle = 'tiktok' | 'minimal' | 'bold' | 'outline' | 'shadow' | 'custom';
+export type CaptionStyle = string;
 
 export interface PipelineStage {
   id: string;

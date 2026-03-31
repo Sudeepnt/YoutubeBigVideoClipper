@@ -25,9 +25,7 @@ export default function ClipCard({ clip, index, onSelect, onPreview }: ClipCardP
                     style={{
                         width: '100%',
                         height: '100%',
-                        background: `linear-gradient(135deg, 
-              hsl(${260 + index * 30}, 60%, 20%) 0%, 
-              hsl(${200 + index * 20}, 50%, 15%) 100%)`,
+                        background: 'linear-gradient(180deg, rgba(30,30,30,0.96) 0%, rgba(8,8,8,0.98) 100%)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',

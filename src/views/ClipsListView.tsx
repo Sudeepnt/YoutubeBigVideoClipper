@@ -1,456 +1,342 @@
-import { useEffect, useState, type CSSProperties } from 'react';
-import {
-    Scissors,
-    MoreVertical,
-    CheckSquare,
-    List,
-    LayoutGrid,
-    Filter,
-    Download,
-    X,
-    LayoutTemplate,
-    LoaderCircle,
-    Trash2
-} from 'lucide-react';
-import { ClipSuggestion, Project } from '../types';
-import { formatMs } from '../store';
-import { generateClipNative } from '../lib/libraryApi';
+import { useEffect, useMemo, useState } from 'react';
+import ResultsPage from '../components/results/ResultsPage';
+import { CaptionStyleTone, ClipDetails, ClipItem } from '../components/results/types';
+import { ClipSuggestion, Project, TranscriptSegment, ViewType } from '../types';
 
 interface ClipsListViewProps {
-    project?: Project | null;
-    clips: ClipSuggestion[];
-    onClipsChange: (clips: ClipSuggestion[]) => void;
-    onEditClip: (clip: ClipSuggestion) => void;
-    onDeleteClip?: (clipId: string) => void;
-    onClearProjectClips?: (projectId: string) => Promise<void>;
-    onBack?: () => void;
+  project?: Project | null;
+  clips: ClipSuggestion[];
+  onClipsChange: (clips: ClipSuggestion[]) => void;
+  onEditClip: (clip: ClipSuggestion) => void;
+  onDeleteClip?: (clipId: string) => void;
+  onClearProjectClips?: (projectId: string) => Promise<void>;
+  onBack?: () => void;
+  onViewChange?: (view: ViewType) => void;
 }
 
-const DEFAULT_CLIP_LENGTH_SEC = 30;
-const DEFAULT_MAX_CLIPS = 8;
+const SCORE_RANKING = [94, 90, 85, 84, 82, 79];
 
-export default function ClipsListView({
-    project,
-    clips,
-    onClipsChange,
-    onEditClip,
-    onDeleteClip,
-    onClearProjectClips,
-    onBack
-}: ClipsListViewProps) {
-    const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-    const [showAutoHook, setShowAutoHook] = useState(true);
+const SAMPLE_TITLES = [
+  'Get Your Dive Master Certificate & Explore Oceans',
+  'Dance Around the World: My Ultimate Goal',
+  'English Goals for Beginners: Short & Long Term',
+  'Dance Culture: The Happiest Cultures Connect Through Dance',
+  'Learn Languages & Travel: Your Next Adventure Awaits!',
+  'Dream Dance Lessons: Brazil, Colombia, India, and Beyond',
+];
 
-    const [startSec, setStartSec] = useState(0);
-    const [endSec, setEndSec] = useState(0);
-    const [clipLengthSec, setClipLengthSec] = useState(DEFAULT_CLIP_LENGTH_SEC);
-    const [maxClips, setMaxClips] = useState(DEFAULT_MAX_CLIPS);
+const SAMPLE_DURATIONS = ['00:02:12', '00:00:44', '00:00:46', '00:00:48', '00:00:15', '00:00:20'];
 
-    const [isGenerating, setIsGenerating] = useState(false);
-    const [progressText, setProgressText] = useState('');
-    const [progressPercent, setProgressPercent] = useState(0);
-    const [elapsedSec, setElapsedSec] = useState(0);
-    const [etaSec, setEtaSec] = useState<number | null>(null);
-    const [completedInSec, setCompletedInSec] = useState<number | null>(null);
-    const [lastMode, setLastMode] = useState<'copy' | 'reencode' | null>(null);
+const INTERNET_VIDEO_URL = 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4';
 
-    useEffect(() => {
-        if (project?.duration) {
-            setEndSec(Math.max(1, Math.floor(project.duration)));
-        }
-    }, [project?.duration]);
+const SAMPLE_MEDIA = [
+  {
+    thumbnailUrl: '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_qAdcMVbrIeM__1.png',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+  {
+    thumbnailUrl: '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_ZnhFtWcfY4w__2.png',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+  {
+    thumbnailUrl: '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_HkZPPre33BI__3.png',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+  {
+    thumbnailUrl: '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_k_YlnxFwgM0__4.png',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+  {
+    thumbnailUrl: '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_nY6KPBFJ7_8__5.png',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+  {
+    thumbnailUrl: '/opus-capture/i.ytimg.com/vi/hP0EceBuGjg/maxresdefault.jpg',
+    videoUrl: INTERNET_VIDEO_URL,
+  },
+];
 
-    const handleGenerateClips = async () => {
-        if (!project) {
-            alert('Please upload or import a source first.');
-            return;
-        }
-        if (clipLengthSec < 2) {
-            alert('Clip duration must be at least 2 seconds.');
-            return;
-        }
-        if (endSec <= startSec) {
-            alert('End must be greater than start.');
-            return;
-        }
+const FALLBACK_CLIPS: ClipItem[] = SAMPLE_TITLES.map((title, index) => ({
+  id: `sample-${index + 1}`,
+  title,
+  score: SCORE_RANKING[index],
+  duration: SAMPLE_DURATIONS[index],
+  thumbnailUrl: SAMPLE_MEDIA[index].thumbnailUrl,
+  videoUrl: SAMPLE_MEDIA[index].videoUrl,
+  isPlayable: index === 1,
+  isSelected: index === 1,
+  hasAutoHook: index < 5,
+  showFavoriteAction: index === 1,
+  showCommentAction: index === 1,
+}));
 
-        const windowMs = (endSec - startSec) * 1000;
-        const clipMs = clipLengthSec * 1000;
-        if (windowMs < clipMs) {
-            alert('Selected range is shorter than clip duration.');
-            return;
-        }
+export default function ClipsListView(props: ClipsListViewProps) {
+  const { project, clips, onEditClip, onBack, onViewChange } = props;
 
-        try {
-            setIsGenerating(true);
-            setProgressText('Preparing source...');
-            setProgressPercent(0);
-            setElapsedSec(0);
-            setEtaSec(null);
-            setCompletedInSec(null);
-            setLastMode(null);
+  const [searchValue, setSearchValue] = useState('');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [showAutoHook, setShowAutoHook] = useState(true);
+  const [previewClipId, setPreviewClipId] = useState<string | null>(null);
+  const [viewerClipId, setViewerClipId] = useState<string | null>(null);
+  const [clipDetailsById, setClipDetailsById] = useState<Record<string, ClipDetails>>({});
 
-            if (onClearProjectClips) {
-                await onClearProjectClips(project.id);
+  const useFallbackData = clips.length === 0;
+
+  const resultClips = useMemo<ClipItem[]>(() => {
+    if (useFallbackData) {
+      return FALLBACK_CLIPS;
+    }
+
+    return clips.map((clip, index) => {
+      const trimmedHook = sanitizeTitle(clip.hook);
+      const fallbackMedia = SAMPLE_MEDIA[index % SAMPLE_MEDIA.length];
+      const fallbackTitle = SAMPLE_TITLES[index % SAMPLE_TITLES.length];
+
+      return {
+        id: clip.id,
+        clipId: clip.id,
+        title: trimmedHook.length > 18 ? trimmedHook : fallbackTitle,
+        score: SCORE_RANKING[index] ?? normalizeScore(clip.score),
+        duration: formatAsClock(clip.endMs - clip.startMs),
+        thumbnailUrl: clip.thumbnailUrl ?? fallbackMedia.thumbnailUrl,
+        videoUrl: clip.videoUrl ?? fallbackMedia.videoUrl,
+        isPlayable: index === 1,
+        isSelected: clip.selected,
+        hasAutoHook: index < 10,
+        showFavoriteAction: index === 1,
+        showCommentAction: index === 1,
+      };
+    });
+  }, [clips, useFallbackData]);
+
+  useEffect(() => {
+    setClipDetailsById((previous) => {
+      const next: Record<string, ClipDetails> = {};
+
+      resultClips.forEach((clip, index) => {
+        const created = createClipDetails(clip, index);
+        const existing = previous[clip.id];
+
+        next[clip.id] = existing
+          ? {
+              ...existing,
+              rank: created.rank,
+              title: created.title,
+              score: created.score,
+              duration: created.duration,
+              thumbnailUrl: created.thumbnailUrl,
+              videoUrl: created.videoUrl,
+              metrics: created.metrics,
+              transcript: created.transcript,
+              summary: created.summary,
             }
-            onClipsChange([]);
+          : created;
+      });
 
-            const generated: ClipSuggestion[] = [];
-            const startMs = startSec * 1000;
-            const endMs = endSec * 1000;
-            const totalPossible = Math.floor((endMs - startMs) / clipMs);
-            const totalToGenerate = Math.min(maxClips, totalPossible);
-            const generationStartTs = performance.now();
+      return next;
+    });
+  }, [resultClips]);
 
-            let currentStart = startMs;
-            let idx = 0;
+  useEffect(() => {
+    if (!viewerClipId) return;
+    if (resultClips.some((clip) => clip.id === viewerClipId)) return;
+    setViewerClipId(null);
+  }, [viewerClipId, resultClips]);
 
-            while (currentStart + clipMs <= endMs && idx < totalToGenerate) {
-                idx += 1;
-                const currentEnd = currentStart + clipMs;
-                setProgressText(`Cutting clip ${idx}/${totalToGenerate}...`);
+  const visibleClips = useMemo(() => {
+    const query = searchValue.trim().toLowerCase();
+    if (!query) return resultClips;
+    return resultClips.filter((clip) => clip.title.toLowerCase().includes(query));
+  }, [resultClips, searchValue]);
 
-                const hook = `Clip ${idx}: ${formatMs(currentStart)} to ${formatMs(currentEnd)}`;
-                const reason = `Generated from ${clipLengthSec}s timeline window`;
-                const score = Math.max(5, 10 - idx);
-                const selected = idx <= 3;
+  const activeViewerClip = viewerClipId ? clipDetailsById[viewerClipId] ?? null : null;
 
-                const persistedClip = await generateClipNative({
-                    projectId: project.id,
-                    startMs: currentStart,
-                    endMs: currentEnd,
-                    index: idx,
-                    hook,
-                    reason,
-                    score,
-                    selected
-                });
+  const viewerCaptionText = useMemo(() => {
+    if (!activeViewerClip) return '';
+    return buildCaption(activeViewerClip.title);
+  }, [activeViewerClip]);
 
-                generated.push(persistedClip);
-                setLastMode(persistedClip.processingMode ?? null);
-                onClipsChange([...generated]);
+  const handlePreviewClip = (clipId: string) => {
+    setPreviewClipId((current) => (current === clipId ? null : clipId));
+  };
 
-                currentStart += clipMs;
-                const elapsed = (performance.now() - generationStartTs) / 1000;
-                const done = generated.length;
-                const remaining = Math.max(totalToGenerate - done, 0);
-                const avgPerClip = done > 0 ? elapsed / done : 0;
+  const handleOpenClipViewer = (clipId: string) => {
+    setViewerClipId(clipId);
+  };
 
-                setElapsedSec(elapsed);
-                setEtaSec(remaining > 0 ? avgPerClip * remaining : 0);
-                setProgressPercent(Math.round((done / totalToGenerate) * 100));
-            }
+  const handleCycleViewerClip = (direction: -1 | 1) => {
+    if (!resultClips.length) return;
 
-            if (!generated.length) {
-                alert('No clips were generated with the selected settings.');
-                return;
-            }
+    setViewerClipId((current) => {
+      const activeId = current ?? resultClips[0].id;
+      const currentIndex = resultClips.findIndex((clip) => clip.id === activeId);
+      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+      const nextIndex = (safeIndex + direction + resultClips.length) % resultClips.length;
+      return resultClips[nextIndex].id;
+    });
+  };
 
-            const totalElapsed = (performance.now() - generationStartTs) / 1000;
-            setCompletedInSec(totalElapsed);
-            setProgressText(`Done: ${generated.length} clips generated in ${formatDurationLabel(totalElapsed)}.`);
-            setProgressPercent(100);
-            setEtaSec(0);
-        } catch (err) {
-            console.error(err);
-            alert(`Clip generation failed: ${err}`);
-            setProgressText('Failed to generate clips.');
-            setEtaSec(null);
-        } finally {
-            setIsGenerating(false);
-        }
-    };
+  const handleViewerAspectRatioChange = (aspectRatio: ClipDetails['aspectRatio']) => {
+    if (!viewerClipId) return;
 
-    const hasClips = clips.length > 0;
+    setClipDetailsById((previous) => {
+      const current = previous[viewerClipId];
+      if (!current) return previous;
 
-    return (
-        <div className="clips-list-view" style={{
-            padding: '24px 40px',
-            background: '#0a0a0b',
-            minHeight: '100%',
-            color: 'white',
-            overflowY: 'auto'
-        }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9ca3af', fontSize: '13px' }}>
-                    <LayoutTemplate size={16} />
-                    <span>{project ? project.name : 'No project selected'}</span>
-                </div>
+      return {
+        ...previous,
+        [viewerClipId]: {
+          ...current,
+          aspectRatio,
+        },
+      };
+    });
+  };
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <button style={{ background: '#ffffff1a', border: 'none', color: 'white', padding: '6px 12px', borderRadius: '6px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}>
-                        <CheckSquare size={16} color="#3b82f6" />
-                        Select
-                    </button>
-                    <button style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>
-                        <Filter size={18} />
-                    </button>
-                    <div style={{ display: 'flex', gap: '4px', background: '#ffffff0a', padding: '2px', borderRadius: '4px' }}>
-                        <button
-                            onClick={(e) => { e.stopPropagation(); setViewMode('list'); }}
-                            style={{ background: viewMode === 'list' ? '#ffffff1a' : 'transparent', border: 'none', color: 'white', padding: '4px', borderRadius: '2px', cursor: 'pointer' }}
-                        >
-                            <List size={16} />
-                        </button>
-                        <button
-                            onClick={(e) => { e.stopPropagation(); setViewMode('grid'); }}
-                            style={{ background: viewMode === 'grid' ? '#ffffff1a' : 'transparent', border: 'none', color: 'white', padding: '4px', borderRadius: '2px', cursor: 'pointer' }}
-                        >
-                            <LayoutGrid size={16} />
-                        </button>
-                    </div>
-                    <button style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>
-                        <Download size={18} />
-                    </button>
-                    <button style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>
-                        <MoreVertical size={18} />
-                    </button>
-                    {onBack && (
-                        <button onClick={onBack} style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>
-                            <X size={18} />
-                        </button>
-                    )}
-                </div>
-            </div>
+  const handleViewerCaptionStyleChange = (captionStyle: CaptionStyleTone) => {
+    if (!viewerClipId) return;
 
-            <div style={{
-                background: '#101013',
-                border: '1px solid #ffffff1a',
-                borderRadius: 12,
-                padding: 16,
-                marginBottom: 24
-            }}>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Clip Settings (timeline split)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(120px, 1fr))', gap: 12 }}>
-                    <label style={{ fontSize: 12, color: '#9ca3af' }}>
-                        Start (sec)
-                        <input
-                            type="number"
-                            min={0}
-                            value={startSec}
-                            onChange={(e) => setStartSec(Number(e.target.value) || 0)}
-                            style={inputStyle}
-                        />
-                    </label>
-                    <label style={{ fontSize: 12, color: '#9ca3af' }}>
-                        End (sec)
-                        <input
-                            type="number"
-                            min={1}
-                            value={endSec}
-                            onChange={(e) => setEndSec(Number(e.target.value) || 0)}
-                            style={inputStyle}
-                        />
-                    </label>
-                    <label style={{ fontSize: 12, color: '#9ca3af' }}>
-                        Clip Duration (sec)
-                        <input
-                            type="number"
-                            min={2}
-                            value={clipLengthSec}
-                            onChange={(e) => setClipLengthSec(Number(e.target.value) || DEFAULT_CLIP_LENGTH_SEC)}
-                            style={inputStyle}
-                        />
-                    </label>
-                    <label style={{ fontSize: 12, color: '#9ca3af' }}>
-                        Max Clips
-                        <input
-                            type="number"
-                            min={1}
-                            max={50}
-                            value={maxClips}
-                            onChange={(e) => setMaxClips(Number(e.target.value) || DEFAULT_MAX_CLIPS)}
-                            style={inputStyle}
-                        />
-                    </label>
-                </div>
+    setClipDetailsById((previous) => {
+      const current = previous[viewerClipId];
+      if (!current) return previous;
 
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <button
-                        onClick={handleGenerateClips}
-                        disabled={isGenerating || !project}
-                        style={{
-                            border: 'none',
-                            borderRadius: 8,
-                            padding: '10px 16px',
-                            fontWeight: 700,
-                            cursor: isGenerating || !project ? 'not-allowed' : 'pointer',
-                            background: isGenerating || !project ? '#6b7280' : '#2563eb',
-                            color: 'white',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8
-                        }}
-                    >
-                        {isGenerating ? <LoaderCircle size={16} className="spin" /> : <Scissors size={16} />}
-                        {isGenerating ? 'Cutting...' : 'Generate Clips'}
-                    </button>
-                    <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                        {progressText}
-                        {(isGenerating || progressPercent > 0) && ` • ${progressPercent}%`}
-                        {(isGenerating || elapsedSec > 0) && ` • elapsed ${formatDurationLabel(elapsedSec)}`}
-                        {etaSec !== null && (isGenerating || etaSec === 0) && ` • left ${formatDurationLabel(etaSec)}`}
-                        {lastMode && ` • mode ${lastMode === 'copy' ? 'fast-copy' : 're-encode'}`}
-                    </span>
-                </div>
-                {completedInSec !== null && !isGenerating && (
-                    <div style={{ marginTop: 8, fontSize: 12, color: '#86efac' }}>
-                        Completed in {formatDurationLabel(completedInSec)}.
-                    </div>
-                )}
-                {(isGenerating || progressPercent > 0) && (
-                    <div style={{ marginTop: 10, height: 8, borderRadius: 999, background: '#ffffff1a', overflow: 'hidden' }}>
-                        <div
-                            style={{
-                                width: `${progressPercent}%`,
-                                height: '100%',
-                                background: '#2563eb',
-                                transition: 'width 0.2s linear'
-                            }}
-                        />
-                    </div>
-                )}
-            </div>
+      return {
+        ...previous,
+        [viewerClipId]: {
+          ...current,
+          captionStyle,
+        },
+      };
+    });
+  };
 
-            {showAutoHook && (
-                <div style={{
-                    background: '#111113',
-                    border: '1px solid #ffffff1a',
-                    borderRadius: '12px',
-                    padding: '16px',
-                    marginBottom: '24px',
-                    position: 'relative'
-                }}>
-                    <button
-                        onClick={() => setShowAutoHook(false)}
-                        style={{ position: 'absolute', top: 16, right: 16, background: 'transparent', border: 'none', color: '#4b5563', cursor: 'pointer' }}
-                    >
-                        <X size={18} />
-                    </button>
+  const handleEditActiveClip = () => {
+    if (!activeViewerClip || useFallbackData) return;
 
-                    <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '8px' }}>Saved clips</h3>
-                    <p style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.6, maxWidth: '800px' }}>
-                        Generated clips are now persisted in local database + disk storage, and shown in All projects.
-                    </p>
-                </div>
-            )}
+    const targetClip = clips.find((clip) => clip.id === activeViewerClip.id);
+    if (!targetClip) return;
 
-            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '16px' }}>
-                Generated clips ({clips.length})
-            </div>
+    onEditClip(targetClip);
+  };
 
-            {!hasClips && (
-                <div style={{
-                    border: '1px dashed #ffffff2a',
-                    borderRadius: 12,
-                    padding: 24,
-                    color: '#9ca3af',
-                    fontSize: 14,
-                    marginBottom: 20
-                }}>
-                    No clips yet. Set times above and click Generate Clips.
-                </div>
-            )}
-
-            <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                gap: '24px'
-            }}>
-                {clips.map((clip, i) => (
-                    <div key={clip.id} className="clip-card" onClick={() => onEditClip(clip)} style={{ cursor: 'pointer' }}>
-                        <div style={{
-                            position: 'relative',
-                            width: '100%',
-                            aspectRatio: '9/16',
-                            background: '#1a1a1c',
-                            borderRadius: '12px',
-                            overflow: 'hidden',
-                            border: '1px solid #ffffff0a',
-                            marginBottom: '12px'
-                        }}>
-                            <video
-                                src={clip.videoUrl ?? `${project?.filePath}#t=${clip.startMs / 1000}`}
-                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                preload="metadata"
-                                controls
-                            />
-
-                            <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.65)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600 }}>
-                                {formatMs(clip.endMs - clip.startMs)}
-                            </div>
-
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (!onDeleteClip) return;
-                                    const ok = window.confirm('Delete this clip?');
-                                    if (!ok) return;
-                                    onDeleteClip(clip.id);
-                                }}
-                                style={{
-                                    position: 'absolute',
-                                    top: 8,
-                                    left: 8,
-                                    width: 26,
-                                    height: 26,
-                                    borderRadius: 8,
-                                    border: '1px solid #ffffff24',
-                                    background: 'rgba(0,0,0,0.6)',
-                                    color: '#f87171',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    cursor: 'pointer'
-                                }}
-                                aria-label="Delete clip"
-                                title="Delete clip"
-                            >
-                                <Trash2 size={14} />
-                            </button>
-
-                            <div style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(0,0,0,0.65)', padding: '4px 8px', borderRadius: 6, fontSize: 12 }}>
-                                {i + 1}
-                            </div>
-                        </div>
-
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#e5e7eb', lineHeight: 1.4, marginBottom: 4 }}>
-                            {clip.hook}
-                        </div>
-                        <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                            {formatMs(clip.startMs)} - {formatMs(clip.endMs)}
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            <style>{`
-                .clip-card:hover { opacity: 0.95; }
-                .spin { animation: spin 0.9s linear infinite; }
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-            `}</style>
-        </div>
-    );
+  return (
+    <ResultsPage
+      projectTitle={project?.name ?? 'SLOW English Podcast for Beginners'}
+      clips={visibleClips}
+      totalClipCount={useFallbackData ? FALLBACK_CLIPS.length : clips.length}
+      searchValue={searchValue}
+      onSearchChange={setSearchValue}
+      showAutoHook={showAutoHook}
+      onDisableAutoHook={() => setShowAutoHook(false)}
+      onCloseAutoHook={() => setShowAutoHook(false)}
+      viewMode={viewMode}
+      onViewModeChange={setViewMode}
+      previewClipId={previewClipId}
+      onPreviewClip={handlePreviewClip}
+      onOpenClip={handleOpenClipViewer}
+      onBack={onBack}
+      onNavigate={(view) => onViewChange?.(view)}
+      activeSidebarItem="clips"
+      viewerClip={activeViewerClip}
+      viewerCaptionText={viewerCaptionText}
+      onCloseViewer={() => setViewerClipId(null)}
+      onPreviousViewerClip={() => handleCycleViewerClip(-1)}
+      onNextViewerClip={() => handleCycleViewerClip(1)}
+      onViewerAspectRatioChange={handleViewerAspectRatioChange}
+      onViewerCaptionStyleChange={handleViewerCaptionStyleChange}
+      onEditViewerClip={handleEditActiveClip}
+    />
+  );
 }
 
-const inputStyle: CSSProperties = {
-    width: '100%',
-    marginTop: 6,
-    background: '#0b0b0e',
-    border: '1px solid #ffffff1a',
-    color: 'white',
-    borderRadius: 8,
-    padding: '9px 10px',
-    fontSize: 13
-};
+function createClipDetails(clip: ClipItem, index: number): ClipDetails {
+  return {
+    id: clip.id,
+    rank: index + 1,
+    title: clip.title,
+    score: clip.score,
+    duration: clip.duration,
+    thumbnailUrl: clip.thumbnailUrl,
+    videoUrl: clip.videoUrl,
+    metrics: buildMetricsFromScore(clip.score),
+    transcript: buildTranscriptSegments(index),
+    summary: buildSceneSummary(clip.title),
+    captionStyle: 'karaoke',
+    aspectRatio: '9:16',
+  };
+}
 
-function formatDurationLabel(totalSeconds: number): string {
-    const safe = Math.max(0, Math.round(totalSeconds));
-    const minutes = Math.floor(safe / 60);
-    const seconds = safe % 60;
-    if (minutes === 0) return `${seconds}s`;
-    return `${minutes}m ${seconds}s`;
+function formatAsClock(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function normalizeScore(score: number): number {
+  const rawScore = score > 10 ? score : score * 10;
+  const rounded = Math.round(rawScore);
+  return Math.max(1, Math.min(99, rounded));
+}
+
+function sanitizeTitle(title: string): string {
+  return title.replace(/\s+/g, ' ').replace(/^['"]+|['"]+$/g, '').trim();
+}
+
+function buildMetricsFromScore(score: number): ClipDetails['metrics'] {
+  if (score >= 92) {
+    return { hook: 'A-', flow: 'A', value: 'A', trend: 'A-' };
+  }
+
+  if (score >= 85) {
+    return { hook: 'B+', flow: 'A-', value: 'A-', trend: 'B+' };
+  }
+
+  if (score >= 80) {
+    return { hook: 'B', flow: 'B+', value: 'A-', trend: 'B' };
+  }
+
+  return { hook: 'B-', flow: 'B', value: 'B+', trend: 'C+' };
+}
+
+function buildSceneSummary(title: string): string[] {
+  return [
+    `Discover a focused story arc in "${title}" with a strong first impression that sustains attention.`,
+    'The scene emphasizes momentum, emotional clarity, and direct audience value to improve retention.',
+  ];
+}
+
+function buildTranscriptSegments(index: number): TranscriptSegment[] {
+  const offset = index * 20_000;
+
+  return [
+    {
+      id: 1,
+      start: 48_000 + offset,
+      end: 61_000 + offset,
+      text: 'What is a goal that you are working on right now?',
+      words: [],
+    },
+    {
+      id: 2,
+      start: 61_000 + offset,
+      end: 84_000 + offset,
+      text: 'I love diving because it brings joy, freedom, and connection to new places.',
+      words: [],
+    },
+    {
+      id: 3,
+      start: 84_000 + offset,
+      end: 101_000 + offset,
+      text: 'My goal is to travel, learn from different cultures, and share this journey through short videos.',
+      words: [],
+    },
+  ];
+}
+
+function buildCaption(title: string): string {
+  const topic = title.split(':')[0] || title;
+  return `${topic}: TO GET STARTED`;
 }

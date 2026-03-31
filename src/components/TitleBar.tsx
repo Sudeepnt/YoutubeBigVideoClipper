@@ -27,7 +27,7 @@ export default function TitleBar({ onSettingsClick }: TitleBarProps) {
                 <button className="btn btn-ghost btn-icon" title="Maximize">
                     <Maximize2 size={14} />
                 </button>
-                <button className="btn btn-ghost btn-icon" title="Close" style={{ color: 'var(--accent-danger)' }}>
+                <button className="btn btn-ghost btn-icon" title="Close">
                     <X size={14} />
                 </button>
             </div>

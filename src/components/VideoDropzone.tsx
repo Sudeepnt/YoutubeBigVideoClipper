@@ -101,20 +101,20 @@ export default function VideoDropzone({ onFileSelect, children }: { onFileSelect
                                 Drag & drop a video file, or click to browse. ClipForge will analyze it with AI to find the most viral moments.
                             </div>
 
-                            <div style={{ background: '#111113', border: '1px solid #ffffff0a', borderRadius: '12px', padding: '16px', marginBottom: '16px' }} className="uploading-box">
-                                <div style={{ background: '#0f1117', border: '1px solid #ffffff14', borderRadius: '6px', height: '12px', marginBottom: '10px', overflow: 'hidden' }}>
+                            <div style={{ background: '#111113', border: '1px solid #ffffff0a', borderRadius: '8px', padding: '16px', marginBottom: '16px' }} className="uploading-box">
+                                <div style={{ background: '#0f1117', border: '1px solid #ffffff14', borderRadius: '4px', height: '12px', marginBottom: '10px', overflow: 'hidden' }}>
                                     <div className="upload-progress-fill" style={{ width: `${progress}%`, height: '100%' }} />
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                                     <div style={{ position: 'relative', width: '20px', height: '20px' }}>
-                                        <RotateCcw size={20} className="spin" color="#22c55e" />
+                                        <RotateCcw size={20} className="spin" color="#f3f4f6" />
                                     </div>
-                                    <span style={{ fontSize: '14px', color: '#22c55e', fontWeight: 600 }}>Uploading {progress.toFixed(1)} %</span>
+                                    <span style={{ fontSize: '14px', color: '#f3f4f6', fontWeight: 600 }}>Uploading {progress.toFixed(1)} %</span>
                                     <span style={{ fontSize: '14px', color: '#9ca3af', marginLeft: 'auto' }}>{estimatedMinutesLeft} min left</span>
                                     <span style={{ fontSize: '14px', color: 'white', fontWeight: 600, marginLeft: '24px', cursor: 'pointer' }}>Cancel</span>
                                 </div>
 
-                                <button style={{ width: '100%', background: '#4b5563', color: 'white', border: 'none', padding: '14px', borderRadius: '8px', fontSize: '16px', fontWeight: 700, cursor: 'not-allowed' }}>
+                                <button style={{ width: '100%', background: '#4b5563', color: 'white', border: 'none', padding: '14px', borderRadius: '6px', fontSize: '16px', fontWeight: 700, cursor: 'not-allowed' }}>
                                     Get clips in 1 click
                                 </button>
                             </div>

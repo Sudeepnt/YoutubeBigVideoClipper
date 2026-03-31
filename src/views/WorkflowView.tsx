@@ -134,8 +134,9 @@ export default function WorkflowView({ project, onProjectDeleted, onClipsReady, 
             return;
         }
 
-        if (!isTauri()) {
-            alert('Workflow clipping requires desktop mode. Run this in Tauri app.');
+        const sourcePathForGeneration = project.sourcePath ?? project.filePath;
+        if (!isTauri() && (!sourcePathForGeneration || sourcePathForGeneration.startsWith('blob:'))) {
+            alert('Web workflow clipping supports imported links or persisted files only. Upload a local file in desktop mode or import from link first.');
             return;
         }
 
@@ -174,6 +175,7 @@ export default function WorkflowView({ project, onProjectDeleted, onClipsReady, 
 
                 const persisted = await generateClipNative({
                     projectId: project.id,
+                    sourcePath: sourcePathForGeneration,
                     startMs: clipStart,
                     endMs: clipEnd,
                     index: i,
@@ -239,7 +241,20 @@ export default function WorkflowView({ project, onProjectDeleted, onClipsReady, 
 
                 <div className="workflow-preview">
                     <div className="workflow-preview-badge">{project.resolution?.height ? `${project.resolution.height}p` : '360p'}</div>
-                    <video src={`${project.filePath}#t=1`} muted playsInline controls={false} />
+                    <video
+                        ref={(el) => {
+                            if (el) {
+                                el.onclick = () => {
+                                    if (el.paused) el.play();
+                                    else el.pause();
+                                };
+                            }
+                        }}
+                        src={`${project.filePath}#t=1`}
+                        playsInline
+                        controls={false}
+                        style={{ cursor: 'pointer' }}
+                    />
                 </div>
 
                 <div className="workflow-panel-wrap">

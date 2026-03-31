@@ -42,9 +42,7 @@ export default function ProjectsView({ projects, onOpenProject, onImport }: Proj
                                 style={{
                                     width: '100%',
                                     height: '100%',
-                                    background: `linear-gradient(135deg, 
-                    hsl(${parseInt(project.id) * 60 + 220}, 50%, 18%) 0%, 
-                    hsl(${parseInt(project.id) * 40 + 180}, 40%, 12%) 100%)`,
+                                    background: 'linear-gradient(180deg, rgba(34,34,34,0.95) 0%, rgba(8,8,8,0.98) 100%)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
