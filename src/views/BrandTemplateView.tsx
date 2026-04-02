@@ -60,6 +60,23 @@ const BACKDROP_ANIMATION_IDS = [
     'simple-words-pop'
 ];
 
+const NUMBERED_CAPTION_TEMPLATES = OPUS_CAPTION_TEMPLATES.filter((template) => template.templateId !== 'none');
+const HIDDEN_CAPTION_SERIALS = new Set([2, 4, 7, 9, 10, 11, 13, 14, 16, 18, 19, 20, 21, 22]);
+const VISIBLE_CAPTION_TEMPLATES = OPUS_CAPTION_TEMPLATES.filter((template) => {
+    if (template.templateId === 'none') return true;
+    const templateIndex = NUMBERED_CAPTION_TEMPLATES.findIndex((item) => item.templateId === template.templateId);
+    return !HIDDEN_CAPTION_SERIALS.has(templateIndex + 1);
+});
+
+const getCaptionTemplateDisplayLabel = (templateId: string, fallbackName: string) => {
+    if (templateId === 'none') return 'No captions';
+    const templateIndex = NUMBERED_CAPTION_TEMPLATES.findIndex((template) => template.templateId === templateId);
+    if (templateIndex >= 0) {
+        return `Caption ${templateIndex + 1}`;
+    }
+    return formatOpusTemplateLabel(templateId, fallbackName);
+};
+
 const clampNumber = (value: number, min: number, max: number) => {
     return Math.min(max, Math.max(min, value));
 };
@@ -131,7 +148,7 @@ export default function BrandTemplateView() {
     }, [selectedCaptionTemplateId]);
 
     const selectedTemplateLabel = selectedCaptionTemplate
-        ? formatOpusTemplateLabel(selectedCaptionTemplate.templateId, selectedCaptionTemplate.name)
+        ? getCaptionTemplateDisplayLabel(selectedCaptionTemplate.templateId, selectedCaptionTemplate.name)
         : 'No captions';
     const selectedTemplateFont = formatOpusFontLabel(selectedCaptionTemplate?.preferences?.font?.family ?? 'Montserrat');
 
@@ -771,10 +788,8 @@ export default function BrandTemplateView() {
                         <div className="bt-tab-content">
                             {captionTab === 'presets' && (
                                 <div className="bt-presets-grid">
-                                    {OPUS_CAPTION_TEMPLATES.map((template) => {
-                                        const label = template.templateId === 'none'
-                                            ? 'No captions'
-                                            : formatOpusTemplateLabel(template.templateId, template.name);
+                                    {VISIBLE_CAPTION_TEMPLATES.map((template) => {
+                                        const label = getCaptionTemplateDisplayLabel(template.templateId, template.name);
                                         const isSelected = template.templateId === selectedCaptionTemplateId;
                                         const previewThumb =
                                             template.imgUrl

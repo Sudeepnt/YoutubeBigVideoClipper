@@ -27,6 +27,10 @@ export interface CaptionPreset {
   uppercase?: boolean;
   letterSpacing?: number;
   transitionStyleId?: string;
+  emphasisColor?: string;
+  emphasisScale?: number;
+  maxLines?: number;
+  autoEmphasis?: 'none' | 'keyword';
 }
 
 export { OPUS_FONT_FAMILIES, OPUS_TRANSITION_STYLES };
@@ -66,23 +70,29 @@ export const CAPTION_PRESETS: CaptionPreset[] = OPUS_CAPTION_TEMPLATES.map((temp
     ? 'No captions'
     : formatOpusTemplateLabel(template.templateId, template.name);
 
+  const isPrimaryKaraokePreset = template.templateId === 'preset-fancy-Karaoke';
+
   return {
     id: template.templateId ?? `preset-${index}`,
     templateId: template.templateId ?? `preset-${index}`,
     label,
     fontFamily: formatOpusFontLabel(font.family ?? 'Montserrat'),
     fontSize: toNumber(font.numericalSize, 48),
-    primaryColor: font.color ?? '#FFFFFF',
+    primaryColor: isPrimaryKaraokePreset ? '#FFFFFF' : (font.color ?? '#FFFFFF'),
     secondaryColor: highlight.secondary ?? highlight.primary ?? font.color ?? '#FFFFFF',
     outlineColor: stroke.color ?? '#000000',
     backColor: '#000000',
     bold: hasBoldStyle(font.style),
     italic: hasItalicStyle(font.style),
-    outline: stroke.enabled ? toNumber(stroke.width, 0) : 0,
+    outline: isPrimaryKaraokePreset ? Math.max(2, toNumber(stroke.width, 2)) : (stroke.enabled ? toNumber(stroke.width, 0) : 0),
     shadow: shadow.enabled ? Math.max(toNumber(shadow.blur, 0), 1) : 0,
     borderStyle: 1,
     uppercase: preferences.enableUppercase ?? false,
-    transitionStyleId: preferences.captionAnimation?.name
+    transitionStyleId: preferences.captionAnimation?.name,
+    emphasisColor: isPrimaryKaraokePreset ? '#39e36d' : (highlight.primary ?? '#F5F5F5'),
+    emphasisScale: isPrimaryKaraokePreset ? 1.2 : 1,
+    maxLines: isPrimaryKaraokePreset ? 2 : 1,
+    autoEmphasis: isPrimaryKaraokePreset ? 'keyword' : 'none',
   };
 });
 

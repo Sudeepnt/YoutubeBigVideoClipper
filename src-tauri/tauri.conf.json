@@ -13,12 +13,24 @@
     "windows": [
       {
         "title": "clipforge",
-        "width": 800,
-        "height": 600
+        "width": 1664,
+        "height": 1200,
+        "minWidth": 1350,
+        "minHeight": 980,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**",
+          "$APPLOCALDATA/**",
+          "$APPCACHE/**",
+          "$TEMP/**"
+        ]
+      }
     }
   },
   "bundle": {

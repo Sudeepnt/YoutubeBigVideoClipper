@@ -9,6 +9,7 @@ import {
     UserPlus,
     ArrowLeftToLine,
     ArrowRightToLine,
+    RefreshCw,
     Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -22,6 +23,10 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ activeView, onViewChange, isExpanded, onToggle }: SidebarProps) {
+    const handleRefreshApp = () => {
+        window.location.reload();
+    };
+
     return (
         <motion.aside 
             className="sidebar glass-panel"
@@ -120,6 +125,16 @@ export default function Sidebar({ activeView, onViewChange, isExpanded, onToggle
                             <span className="sidebar-btn-main">
                                 <LinkIcon size={18} />
                                 {isExpanded && 'Integrations'}
+                            </span>
+                        </button>
+                        <button
+                            className="sidebar-btn"
+                            onClick={handleRefreshApp}
+                            title="Refresh app"
+                        >
+                            <span className="sidebar-btn-main">
+                                <RefreshCw size={18} />
+                                {isExpanded && 'Refresh App'}
                             </span>
                         </button>
                     </div>

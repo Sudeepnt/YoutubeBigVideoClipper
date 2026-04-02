@@ -11,8 +11,8 @@
   line-height: 24px;
   font-weight: 400;
 
-  color: #f5f5f5;
-  background-color: #050505;
+  color: #eef4ff;
+  background-color: #06080d;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -48,12 +48,12 @@
 
 a {
   font-weight: 500;
-  color: #f5f5f5;
+  color: #eef4ff;
   text-decoration: inherit;
 }
 
 a:hover {
-  color: #d4d4d4;
+  color: #d7e6ff;
 }
 
 h1 {
@@ -68,8 +68,8 @@ button {
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  color: #f5f5f5;
-  background-color: #111111;
+  color: #eef4ff;
+  background-color: #131a25;
   transition: border-color 0.25s;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
 }
@@ -79,11 +79,11 @@ button {
 }
 
 button:hover {
-  border-color: rgba(255, 255, 255, 0.24);
+  border-color: rgba(176, 205, 255, 0.28);
 }
 button:active {
-  border-color: rgba(255, 255, 255, 0.24);
-  background-color: #1a1a1a;
+  border-color: rgba(176, 205, 255, 0.28);
+  background-color: #17202e;
 }
 
 input,
@@ -97,20 +97,20 @@ button {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #f6f6f6;
-    background-color: #050505;
+    color: #eef4ff;
+    background-color: #06080d;
   }
 
   a:hover {
-    color: #d4d4d4;
+    color: #d7e6ff;
   }
 
   input,
   button {
-    color: #ffffff;
-    background-color: rgba(15, 15, 15, 0.72);
+    color: #eef4ff;
+    background-color: rgba(19, 26, 37, 0.78);
   }
   button:active {
-    background-color: rgba(20, 20, 20, 0.56);
+    background-color: rgba(23, 32, 46, 0.6);
   }
 }

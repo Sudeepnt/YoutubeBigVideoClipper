@@ -7,6 +7,7 @@ import {
   CalendarDays,
   BarChart3,
   Link2,
+  RefreshCw,
   UserRound,
   UserPlus,
 } from 'lucide-react';
@@ -37,6 +38,10 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function AppSidebar({ activeItem = 'clips', onBack, onNavigate }: AppSidebarProps) {
+  const handleRefreshApp = () => {
+    window.location.reload();
+  };
+
   return (
     <aside className="results-sidebar" aria-label="Primary navigation">
       <div className="results-sidebar-top">
@@ -89,6 +94,18 @@ export default function AppSidebar({ activeItem = 'clips', onBack, onNavigate }:
           );
         })}
       </nav>
+
+      <div className="results-sidebar-footer">
+        <button
+          type="button"
+          className="results-sidebar-footer-btn"
+          onClick={handleRefreshApp}
+          aria-label="Refresh app"
+          title="Refresh app"
+        >
+          <RefreshCw size={18} />
+        </button>
+      </div>
     </aside>
   );
 }

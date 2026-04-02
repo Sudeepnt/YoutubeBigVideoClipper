@@ -337,6 +337,10 @@ function buildTranscriptSegments(index: number): TranscriptSegment[] {
 }
 
 function buildCaption(title: string): string {
-  const topic = title.split(':')[0] || title;
-  return `${topic}: TO GET STARTED`;
+  const cleaned = (title.split(':')[0] || title)
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 4);
+  return cleaned.join(' ') || 'TO GET STARTED';
 }

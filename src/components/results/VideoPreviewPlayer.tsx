@@ -1,6 +1,6 @@
 import { Play } from 'lucide-react';
 import AspectRatioSelector from './AspectRatioSelector';
-import { CAPTION_STYLE_OPTIONS } from './CaptionSelector';
+import { CaptionStylePreview } from './CaptionSelector';
 import { AspectRatioOption, ClipDetails } from './types';
 
 interface VideoPreviewPlayerProps {
@@ -9,9 +9,7 @@ interface VideoPreviewPlayerProps {
   onAspectRatioChange: (ratio: AspectRatioOption) => void;
 }
 
-export default function VideoPreviewPlayer({ clip, onAspectRatioChange }: VideoPreviewPlayerProps) {
-  const activeCaptionOption = CAPTION_STYLE_OPTIONS.find((o) => o.id === clip.captionStyle) || CAPTION_STYLE_OPTIONS[0];
-
+export default function VideoPreviewPlayer({ clip, captionText, onAspectRatioChange }: VideoPreviewPlayerProps) {
   return (
     <section className="viewer-player-column" aria-label="Video preview">
       <div className="viewer-player-header">
@@ -34,9 +32,14 @@ export default function VideoPreviewPlayer({ clip, onAspectRatioChange }: VideoP
             <img src={clip.thumbnailUrl} alt={clip.title} className="viewer-video-media" loading="lazy" />
           )}
 
-          <div className="viewer-video-caption" style={{ transform: 'scale(1.5) translateX(-50%)', transformOrigin: 'bottom center', pointerEvents: 'none', position: 'absolute', bottom: '15%', left: '50%', width:'100%', display: 'flex', justifyContent: 'center' }}>
-            {activeCaptionOption.renderPreview()}
-          </div>
+          {clip.captionStyle !== 'no-captions' && (
+            <div className="viewer-video-caption">
+              <CaptionStylePreview
+                styleId={clip.captionStyle}
+                text={captionText || clip.title}
+              />
+            </div>
+          )}
 
           <div className="viewer-video-top-overlay">
             <span>LOW-RES PREVIEW</span>

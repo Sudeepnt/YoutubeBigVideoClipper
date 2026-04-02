@@ -7,6 +7,7 @@ interface StoredProject {
     sourceType: SourceType;
     sourceUrl: string | null;
     sourcePath: string;
+    nativeSourcePath?: string | null;
     fileName: string;
     fileSize: number;
     duration: number;
@@ -61,22 +62,49 @@ const assetUrl = (path: string): string => {
     return path;
 };
 
-const mapProject = (p: StoredProject): Project => ({
-    id: p.id,
-    name: p.name,
-    filePath: assetUrl(p.sourcePath),
-    sourcePath: p.sourcePath,
-    fileName: p.fileName,
-    duration: p.duration,
-    fileSize: p.fileSize,
-    resolution: { width: p.resolutionWidth, height: p.resolutionHeight },
-    createdAt: p.createdAt,
-    status: (p.status as Project['status']) ?? 'imported',
-    thumbnailUrl: p.thumbnailPath ? assetUrl(p.thumbnailPath) : undefined,
-    sourceType: p.sourceType,
-    sourceUrl: p.sourceUrl ?? undefined,
-    clipCount: p.clipCount
-});
+const isLocalDevHost = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    return /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(window.location.hostname);
+};
+
+async function fetchLocalDevJson<T>(path: string, payload: unknown): Promise<T> {
+    const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    const body = await response.json().catch(() => ({} as { error?: string }));
+    if (!response.ok) {
+        throw new Error(body.error || `Request failed with status ${response.status}.`);
+    }
+
+    return body as T;
+}
+
+const mapProject = (p: StoredProject): Project => {
+    const resolvedSourcePath = isTauri() ? (p.nativeSourcePath ?? p.sourcePath) : p.sourcePath;
+    const resolvedPreviewPath = isTauri() && p.nativeSourcePath && p.sourcePath.startsWith('/')
+        ? p.sourcePath
+        : assetUrl(resolvedSourcePath);
+
+    return {
+        id: p.id,
+        name: p.name,
+        filePath: resolvedPreviewPath,
+        sourcePath: resolvedSourcePath,
+        fileName: p.fileName,
+        duration: p.duration,
+        fileSize: p.fileSize,
+        resolution: { width: p.resolutionWidth, height: p.resolutionHeight },
+        createdAt: p.createdAt,
+        status: (p.status as Project['status']) ?? 'imported',
+        thumbnailUrl: p.thumbnailPath ? assetUrl(p.thumbnailPath) : undefined,
+        sourceType: p.sourceType,
+        sourceUrl: p.sourceUrl ?? undefined,
+        clipCount: p.clipCount
+    };
+};
 
 const mapClip = (c: StoredClip): ClipSuggestion => ({
     id: c.id,
@@ -120,42 +148,35 @@ export async function createUploadProject(payload: UploadProjectPayload): Promis
 
 export async function createLinkProject(url: string, quality = 1080): Promise<Project> {
     if (!isTauri()) {
-        const response = await fetch('/api/link-import', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ url, quality }),
-        });
-
-        const payload = await response.json().catch(() => ({} as { error?: string }));
-        if (!response.ok) {
-            throw new Error(payload.error || `URL import failed with status ${response.status}.`);
-        }
-
-        return mapProject(payload as StoredProject);
+        const payload = await fetchLocalDevJson<StoredProject>('/api/link-import', { url, quality });
+        return mapProject(payload);
     }
-    const row = await invoke<StoredProject>('create_link_project', { url });
-    return mapProject(row);
+
+    try {
+        const row = await invoke<StoredProject>('create_link_project', { url, quality });
+        return mapProject(row);
+    } catch (error) {
+        if (!isLocalDevHost()) {
+            throw error;
+        }
+        const payload = await fetchLocalDevJson<StoredProject>('/api/link-import', { url, quality });
+        return mapProject(payload);
+    }
 }
 
 export async function fetchLinkInfo(url: string): Promise<LinkInfo> {
     if (!isTauri()) {
-        const response = await fetch('/api/link-info', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ url }),
-        });
-        const payload = await response.json().catch(() => ({} as { error?: string }));
-        if (!response.ok) {
-            throw new Error(payload.error || `Link info failed with status ${response.status}.`);
-        }
-        return payload as LinkInfo;
+        return fetchLocalDevJson<LinkInfo>('/api/link-info', { url });
     }
 
-    // Native path can be wired later; for now keep consistent behavior.
-    return {
-        maxHeight: 1440,
-        qualityOptions: [480, 720, 1080],
-    };
+    try {
+        return await invoke<LinkInfo>('fetch_link_info', { url });
+    } catch (error) {
+        if (!isLocalDevHost()) {
+            throw error;
+        }
+        return fetchLocalDevJson<LinkInfo>('/api/link-info', { url });
+    }
 }
 
 export async function clearProjectClips(projectId: string): Promise<void> {

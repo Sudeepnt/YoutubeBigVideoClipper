@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -128,6 +128,15 @@ struct StoredNotificationTarget {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LinkInfoPayload {
+    title: Option<String>,
+    duration: f64,
+    max_height: i32,
+    quality_options: Vec<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StoredNotification {
     id: String,
     project_id: Option<String>,
@@ -239,8 +248,181 @@ fn strip_extension(file_name: &str) -> String {
         .to_string()
 }
 
+fn candidate_binary_paths(bin: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(path_var) = env::var_os("PATH") {
+        candidates.extend(env::split_paths(&path_var).map(|dir| dir.join(bin)));
+    }
+
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        candidates.push(PathBuf::from(dir).join(bin));
+    }
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        for version in ["3.9", "3.10", "3.11", "3.12", "3.13"] {
+            candidates.push(home.join("Library").join("Python").join(version).join("bin").join(bin));
+        }
+        candidates.push(home.join(".local").join("bin").join(bin));
+        candidates.push(home.join(".cargo").join("bin").join(bin));
+    }
+
+    candidates
+}
+
+fn resolve_binary_path(bin: &str) -> Option<PathBuf> {
+    candidate_binary_paths(bin)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
 fn command_exists(bin: &str) -> bool {
-    Command::new(bin).arg("-version").output().is_ok()
+    resolve_binary_path(bin).is_some()
+}
+
+fn sanitize_quality(input: Option<i32>) -> i32 {
+    let parsed = input.unwrap_or(1080);
+    let safe = parsed.clamp(144, 1440);
+    if safe == 0 { 1080 } else { safe }
+}
+
+fn collect_heights_from_formats(formats: &[Value]) -> Vec<i32> {
+    let mut heights: Vec<i32> = Vec::new();
+
+    for format in formats {
+        let Some(height) = format.get("height").and_then(Value::as_i64) else {
+            continue;
+        };
+        let vcodec = format
+            .get("vcodec")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let height = height as i32;
+
+        if height > 0 && height <= 1440 && vcodec != "none" && !heights.contains(&height) {
+            heights.push(height);
+        }
+    }
+
+    heights.sort_unstable();
+    heights
+}
+
+fn build_quality_options(max_height: i32) -> Vec<i32> {
+    let safe_max = max_height.max(0);
+    if safe_max >= 1080 {
+        vec![480, 720, 1080]
+    } else if safe_max >= 720 {
+        vec![360, 480, 720]
+    } else if safe_max >= 480 {
+        vec![360, 480]
+    } else if safe_max >= 360 {
+        vec![360]
+    } else if safe_max >= 240 {
+        vec![240]
+    } else {
+        vec![144]
+    }
+}
+
+fn format_selector_for_max_height(max_height: i32) -> String {
+    format!(
+        "bv*[height<=?{max_height}][ext=mp4]+ba[ext=m4a]/b[height<=?{max_height}][ext=mp4]/18/b[height<=?{max_height}]/best[height<=?{max_height}]/b/best"
+    )
+}
+
+fn yt_dlp_error_message(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+
+    "Unknown yt-dlp error".to_string()
+}
+
+fn run_yt_dlp_attempt(args: &[String]) -> Result<Output, String> {
+    let yt_dlp = resolve_binary_path("yt-dlp")
+        .ok_or_else(|| "yt-dlp is not installed or not in a discoverable location.".to_string())?;
+
+    Command::new(yt_dlp)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to run yt-dlp: {e}"))
+}
+
+fn run_yt_dlp_with_fallback(base_args: &[String]) -> Result<Output, String> {
+    let attempts: [Vec<String>; 6] = [
+        base_args.to_vec(),
+        {
+            let mut args = vec![
+                "--extractor-args".to_string(),
+                "youtube:player_client=android".to_string(),
+            ];
+            args.extend(base_args.iter().cloned());
+            args
+        },
+        {
+            let mut args = vec![
+                "--extractor-args".to_string(),
+                "youtube:player_client=tv,android".to_string(),
+            ];
+            args.extend(base_args.iter().cloned());
+            args
+        },
+        {
+            let mut args = vec![
+                "--cookies-from-browser".to_string(),
+                "chrome".to_string(),
+            ];
+            args.extend(base_args.iter().cloned());
+            args
+        },
+        {
+            let mut args = vec![
+                "--cookies-from-browser".to_string(),
+                "brave".to_string(),
+            ];
+            args.extend(base_args.iter().cloned());
+            args
+        },
+        {
+            let mut args = vec![
+                "--cookies-from-browser".to_string(),
+                "safari".to_string(),
+            ];
+            args.extend(base_args.iter().cloned());
+            args
+        },
+    ];
+    let mut last_error = None;
+
+    for args in attempts {
+        let output = run_yt_dlp_attempt(&args)?;
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        last_error = Some(yt_dlp_error_message(&output));
+    }
+
+    Err(last_error.unwrap_or_else(|| "yt-dlp failed before returning output.".to_string()))
+}
+
+fn extract_link_metadata(url: &str) -> Result<Value, String> {
+    let args = vec![
+        "--no-playlist".to_string(),
+        "--dump-single-json".to_string(),
+        "--no-warnings".to_string(),
+        url.to_string(),
+    ];
+    let output = run_yt_dlp_with_fallback(&args)?;
+    serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|e| format!("Failed to parse yt-dlp metadata: {e}"))
 }
 
 fn app_library_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -773,7 +955,11 @@ fn probe_media(path: &Path) -> MediaProbe {
         file_size: fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0),
     };
 
-    let output = Command::new("ffprobe")
+    let Some(ffprobe_path) = resolve_binary_path("ffprobe") else {
+        return fallback;
+    };
+
+    let output = Command::new(ffprobe_path)
         .arg("-v")
         .arg("error")
         .arg("-print_format")
@@ -858,14 +1044,14 @@ fn run_ffmpeg_clip(source_path: &Path, output_path: &Path, start_ms: u64, end_ms
     if end_ms <= start_ms {
         return Err("Invalid clip range: end must be greater than start.".to_string());
     }
-    if !command_exists("ffmpeg") {
-        return Err("ffmpeg is not installed or not on PATH.".to_string());
-    }
+    let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+        return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+    };
 
     let start_sec = format!("{:.3}", (start_ms as f64) / 1000.0);
     let duration_sec = format!("{:.3}", ((end_ms - start_ms) as f64) / 1000.0);
 
-    let copy_out = Command::new("ffmpeg")
+    let copy_out = Command::new(&ffmpeg_path)
         .arg("-y")
         .arg("-ss")
         .arg(&start_sec)
@@ -885,7 +1071,7 @@ fn run_ffmpeg_clip(source_path: &Path, output_path: &Path, start_ms: u64, end_ms
         return Ok("copy".to_string());
     }
 
-    let reencode_out = Command::new("ffmpeg")
+    let reencode_out = Command::new(ffmpeg_path)
         .arg("-y")
         .arg("-ss")
         .arg(&start_sec)
@@ -1645,7 +1831,39 @@ fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -
 }
 
 #[tauri::command]
-fn create_link_project(app: tauri::AppHandle, url: String) -> Result<StoredProject, String> {
+fn fetch_link_info(url: String) -> Result<LinkInfoPayload, String> {
+    if !command_exists("yt-dlp") {
+        return Err("yt-dlp is not installed. Install it to inspect YouTube links in the desktop app.".to_string());
+    }
+
+    let metadata = extract_link_metadata(url.trim())?;
+    let formats = metadata
+        .get("formats")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut heights = collect_heights_from_formats(&formats);
+
+    if heights.is_empty() {
+        if let Some(height) = metadata.get("height").and_then(Value::as_i64) {
+            let height = height as i32;
+            if height > 0 {
+                heights.push(height.min(1440));
+            }
+        }
+    }
+
+    let max_height = heights.last().copied().unwrap_or(0);
+    Ok(LinkInfoPayload {
+        title: metadata.get("title").and_then(Value::as_str).map(|value| value.to_string()),
+        duration: metadata.get("duration").and_then(Value::as_f64).unwrap_or(0.0),
+        max_height,
+        quality_options: build_quality_options(max_height),
+    })
+}
+
+#[tauri::command]
+fn create_link_project(app: tauri::AppHandle, url: String, quality: Option<i32>) -> Result<StoredProject, String> {
     if !command_exists("yt-dlp") {
         return Err("yt-dlp is not installed. Install it to import YouTube links.".to_string());
     }
@@ -1657,35 +1875,53 @@ fn create_link_project(app: tauri::AppHandle, url: String) -> Result<StoredProje
     fs::create_dir_all(project_folder.join("clips"))
         .map_err(|e| format!("Failed to create project folder: {e}"))?;
 
+    let requested_height = sanitize_quality(quality);
+    let metadata = extract_link_metadata(url.trim()).ok();
     let out_template = project_folder.join("source.%(ext)s");
-    let download_output = Command::new("yt-dlp")
-        .arg("--no-playlist")
-        .arg("--restrict-filenames")
-        .arg("-f")
-        .arg("bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b")
-        .arg("--merge-output-format")
-        .arg("mp4")
-        .arg("-o")
-        .arg(out_template.to_string_lossy().to_string())
-        .arg(&url)
-        .output()
-        .map_err(|e| format!("Failed to run yt-dlp: {e}"))?;
+    let download_args = vec![
+        "--no-playlist".to_string(),
+        "--restrict-filenames".to_string(),
+        "--no-warnings".to_string(),
+        "--no-part".to_string(),
+        "--retries".to_string(),
+        "10".to_string(),
+        "--fragment-retries".to_string(),
+        "10".to_string(),
+        "-f".to_string(),
+        format_selector_for_max_height(requested_height),
+        "--merge-output-format".to_string(),
+        "mp4".to_string(),
+        "-o".to_string(),
+        out_template.to_string_lossy().to_string(),
+        "--print".to_string(),
+        "after_move:filepath".to_string(),
+        url.clone(),
+    ];
 
-    if !download_output.status.success() {
-        return Err(format!(
-            "yt-dlp failed: {}",
-            String::from_utf8_lossy(&download_output.stderr)
-        ));
-    }
+    let download_output = run_yt_dlp_with_fallback(&download_args)
+        .map_err(|error| format!("yt-dlp failed: {error}"))?;
 
-    let source_path = find_downloaded_source(&project_folder)?;
+    let output_lines: Vec<String> = String::from_utf8_lossy(&download_output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let downloaded_path = output_lines.last().map(PathBuf::from);
+    let source_path = downloaded_path
+        .filter(|path| path.exists())
+        .unwrap_or(find_downloaded_source(&project_folder)?);
     let probe = probe_media(&source_path);
     let file_name = source_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("source.mp4")
         .to_string();
-    let project_name = strip_extension(&file_name);
+    let project_name = metadata
+        .as_ref()
+        .and_then(|value| value.get("title"))
+        .and_then(Value::as_str)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| strip_extension(&file_name));
 
     conn.execute(
         r#"
@@ -1894,8 +2130,10 @@ fn export_clip(
         .to_string()
         .replace(':', "\\:");
     let vf_arg = format!("subtitles={escaped_srt_path}");
+    let ffmpeg_path = resolve_binary_path("ffmpeg")
+        .ok_or_else(|| "ffmpeg is not installed or not in a discoverable location.".to_string())?;
 
-    let output = Command::new("ffmpeg")
+    let output = Command::new(ffmpeg_path)
         .arg("-y")
         .arg("-i")
         .arg(input_path)
@@ -1940,6 +2178,7 @@ pub fn run() {
             list_workflow_renders,
             start_agent_workflow,
             create_upload_project,
+            fetch_link_info,
             create_link_project,
             clear_project_clips,
             generate_clip_native,

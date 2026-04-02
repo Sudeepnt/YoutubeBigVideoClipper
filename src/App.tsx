@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import Sidebar from './components/Sidebar';
 import HomeView from './views/HomeView';
 import BrandTemplateView from './views/BrandTemplateView';
@@ -51,9 +52,34 @@ function viewToHash(view: ViewType): string {
   return `#/${view}`;
 }
 
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+const WORKFLOW_PREVIEW_PROJECT: Project = {
+  id: 'workflow-preview',
+  name: 'Leadership Shorts Sprint',
+  fileName: 'leadership-session.mp4',
+  filePath: '',
+  sourceType: 'link',
+  sourceUrl: 'https://youtube.com/shorts/Q0BOH_s9gSU?si=EIFlwCRmkfISn6g3',
+  fileSize: 58_500_000,
+  duration: 42,
+  resolution: { width: 1080, height: 1920 },
+  createdAt: '2026-03-31T05:00:00.000Z',
+  status: 'imported',
+  clipCount: 0
+};
+
 function App() {
   const initialViewRef = useRef<ViewType>(parseViewFromHash(window.location.hash));
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
+  const [workflowAutoStartId, setWorkflowAutoStartId] = useState<string | null>(null);
+  const [preparingWorkflowProjectId, setPreparingWorkflowProjectId] = useState<string | null>(null);
   const [state, setState] = useState<AppState>({
     currentView: initialViewRef.current,
     projects: [],
@@ -68,6 +94,7 @@ function App() {
 
   const [activeClip, setActiveClip] = useState<ClipSuggestion | null>(null);
   const previousViewRef = useRef<ViewType>(initialViewRef.current);
+  const workflowPreviewProject = state.activeProject ?? (state.currentView === 'workflow' ? WORKFLOW_PREVIEW_PROJECT : null);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,6 +201,7 @@ function App() {
           clips: [],
           currentView: 'workflow'
         }));
+        setWorkflowAutoStartId(fallbackProject.id);
         return;
       }
 
@@ -206,6 +234,7 @@ function App() {
         clips: [],
         currentView: 'workflow'
       }));
+      setWorkflowAutoStartId(project.id);
     } catch (err) {
       console.error(err);
       alert(`Upload import failed: ${err}`);
@@ -215,6 +244,7 @@ function App() {
   const handleOpenProject = useCallback((projectId: string) => {
     (async () => {
       try {
+        setWorkflowAutoStartId(null);
         const projectClips = await listProjectClips(projectId);
         setState((s) => {
           const project = s.projects.find((p) => p.id === projectId) ?? null;
@@ -235,7 +265,36 @@ function App() {
 
   const handleImportFromLink = useCallback((url: string, quality = 1080) => {
     (async () => {
+      const pendingProjectId = `pending-link-${Date.now()}`;
+      const pendingProject: Project = {
+        id: pendingProjectId,
+        name: 'Preparing link import',
+        fileName: 'source.mp4',
+        filePath: '',
+        sourceType: 'link',
+        sourceUrl: url,
+        fileSize: Math.max(24_000_000, quality * 54_000),
+        duration: 0,
+        resolution: { width: 0, height: quality },
+        createdAt: new Date().toISOString(),
+        status: 'imported',
+        clipCount: 0
+      };
+
       try {
+        flushSync(() => {
+          setPreparingWorkflowProjectId(pendingProjectId);
+          window.location.hash = viewToHash('workflow');
+          setState((s) => ({
+            ...s,
+            activeProject: pendingProject,
+            clips: [],
+            currentView: 'workflow'
+          }));
+        });
+
+        await waitForNextPaint();
+
         const project = await createLinkProject(url, quality);
         const projectClips = await listProjectClips(project.id);
         setState((s) => ({
@@ -245,8 +304,17 @@ function App() {
           clips: projectClips,
           currentView: 'workflow'
         }));
+        setPreparingWorkflowProjectId(null);
+        setWorkflowAutoStartId(project.id);
       } catch (err) {
+        setPreparingWorkflowProjectId(null);
         console.error(err);
+        setState((s) => ({
+          ...s,
+          activeProject: null,
+          clips: [],
+          currentView: 'home'
+        }));
         alert(`Link import failed: ${err}`);
       }
     })();
@@ -328,6 +396,17 @@ function App() {
     setState((s) => ({ ...s, currentView: 'editor' }));
   }, []);
 
+  const handleLaunchWorkflowApp = useCallback(() => {
+    setPreparingWorkflowProjectId(null);
+    setWorkflowAutoStartId(null);
+    setState((s) => ({
+      ...s,
+      activeProject: { ...WORKFLOW_PREVIEW_PROJECT },
+      clips: [],
+      currentView: 'workflow'
+    }));
+  }, []);
+
   const handleViewChange = useCallback((view: ViewType) => {
     setState((s) => ({ ...s, currentView: view }));
   }, []);
@@ -358,6 +437,7 @@ function App() {
             onOpenProject={handleOpenProject}
             onImportFromLink={handleImportFromLink}
             onDeleteProject={handleDeleteProject}
+            onLaunchWorkflowApp={handleLaunchWorkflowApp}
           />
         )}
 
@@ -369,12 +449,15 @@ function App() {
           />
         )}
 
-        {state.currentView === 'workflow' && state.activeProject && (
+        {state.currentView === 'workflow' && workflowPreviewProject && (
           <WorkflowView
-            project={state.activeProject}
-            onProjectDeleted={handleDeleteProject}
+            project={workflowPreviewProject}
+            onProjectDeleted={workflowPreviewProject.id === WORKFLOW_PREVIEW_PROJECT.id ? () => handleViewChange('home') : handleDeleteProject}
             onClipsReady={handleClipsChange}
             onOpenClipsList={() => handleViewChange('clips-list')}
+            autoStart={workflowAutoStartId === workflowPreviewProject.id}
+            onAutoStartConsumed={() => setWorkflowAutoStartId(null)}
+            sourcePreparing={preparingWorkflowProjectId === workflowPreviewProject.id}
           />
         )}
 

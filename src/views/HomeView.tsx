@@ -12,9 +12,9 @@ import {
     Video,
     Clock,
     FileVideo,
-    Folder
+    Folder,
+    Workflow
 } from 'lucide-react';
-import CustomArrow from '../components/CustomArrow';
 import { Project } from '../types';
 import { fetchLinkInfo, type LinkInfo } from '../lib/libraryApi';
 
@@ -24,6 +24,7 @@ interface HomeViewProps {
     onOpenProject: (projectId: string) => void;
     onImportFromLink: (url: string, quality: number) => void;
     onDeleteProject: (projectId: string) => void;
+    onLaunchWorkflowApp: () => void;
 }
 
 type FeatureModalType = 'long' | 'captions' | 'reframe' | null;
@@ -57,7 +58,31 @@ function formatUploadedAgo(createdAt: string): string {
     return `${diffDays}d ago`;
 }
 
-export default function HomeView({ onFileSelect, projects, onOpenProject, onImportFromLink, onDeleteProject }: HomeViewProps) {
+function formatBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes <= 0) return 'Estimating...';
+    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+    if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+    return `${bytes} B`;
+}
+
+function estimateLinkImportSize(duration?: number, quality = 1080): number {
+    const bitrateByQuality: Record<number, number> = {
+        360: 1.1,
+        480: 2.2,
+        720: 4.3,
+        1080: 7.8,
+        1440: 12.5,
+        2160: 22
+    };
+
+    const safeDuration = Math.max(60, duration ?? 0);
+    const normalizedQuality = quality >= 2160 ? 2160 : quality >= 1440 ? 1440 : quality >= 1080 ? 1080 : quality >= 720 ? 720 : quality >= 480 ? 480 : 360;
+    const bitrateMbps = bitrateByQuality[normalizedQuality] ?? 7.8;
+    return Math.round(safeDuration * bitrateMbps * 125_000);
+}
+
+export default function HomeView({ onFileSelect, projects, onOpenProject, onImportFromLink, onDeleteProject, onLaunchWorkflowApp }: HomeViewProps) {
     const [featureModal, setFeatureModal] = useState<FeatureModalType>(null);
     const [sourceUrl, setSourceUrl] = useState('');
     const [linkQuality, setLinkQuality] = useState<number>(1080);
@@ -67,6 +92,7 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
     const [linkHistory, setLinkHistory] = useState<string[]>([]);
     const [showLinkHistory, setShowLinkHistory] = useState(false);
     const [isDragActive, setIsDragActive] = useState(false);
+    const [linkPrepProgress, setLinkPrepProgress] = useState(0);
     
     const modalFileInputRef = useRef<HTMLInputElement>(null);
     const mainFileInputRef = useRef<HTMLInputElement>(null);
@@ -142,9 +168,8 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
     // Link Processing
     const handleGetClips = () => {
         if (sourceUrl.trim()) {
-            if (linkInfoLoading) return;
-            if (hasCandidateLink && !linkInfo) {
-                alert(linkInfoError || 'Could not verify link. Please try again.');
+            if (!hasCandidateLink) {
+                alert('Please paste a valid video link.');
                 return;
             }
             saveLinkHistory(sourceUrl.trim());
@@ -192,7 +217,34 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         return () => window.clearTimeout(timer);
     }, [sourceUrl]);
 
+    useEffect(() => {
+        if (!hasCandidateLink) {
+            setLinkPrepProgress(0);
+            return;
+        }
+
+        if (linkInfoLoading) {
+            const interval = window.setInterval(() => {
+                setLinkPrepProgress((current) => Math.min(78, current + Math.max(4, (78 - current) * 0.18)));
+            }, 120);
+            return () => window.clearInterval(interval);
+        }
+
+        if (linkInfo || linkInfoError) {
+            setLinkPrepProgress(linkInfo ? 100 : 0);
+        }
+    }, [hasCandidateLink, linkInfo, linkInfoError, linkInfoLoading]);
+
     const displayedQualityOptions = useMemo(() => linkInfo?.qualityOptions ?? [], [linkInfo]);
+    const renderedQualityOptions = useMemo(() => {
+        if (displayedQualityOptions.length > 0) return displayedQualityOptions;
+        return hasCandidateLink ? [linkQuality] : [];
+    }, [displayedQualityOptions, hasCandidateLink, linkQuality]);
+    const estimatedDownloadSize = useMemo(
+        () => (linkInfo?.duration ? estimateLinkImportSize(linkInfo.duration, linkQuality) : 0),
+        [linkInfo?.duration, linkQuality]
+    );
+    const downloadedEstimate = 0;
     const recentProjects = projects.slice(0, 4);
 
     return (
@@ -252,20 +304,6 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                                 onBlur={() => window.setTimeout(() => setShowLinkHistory(false), 150)}
                                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleGetClips(); } }}
                             />
-                            {hasCandidateLink && (
-                                <div style={{ display: 'flex', gap: 6 }}>
-                                    {displayedQualityOptions.map((q) => (
-                                        <button 
-                                            key={q}
-                                            onClick={() => setLinkQuality(q)}
-                                            className={`quality-pill ${linkQuality === q ? 'active' : ''}`}
-                                            disabled={linkInfoLoading}
-                                        >
-                                            {q}p
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
                         </div>
 
                         {/* Dropdown History */}
@@ -295,9 +333,57 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                         </AnimatePresence>
                     </div>
 
+                    {hasCandidateLink && (
+                        <div className="link-download-panel">
+                            <div className="link-download-topline">
+                                <span>{linkInfoLoading ? 'Preparing import...' : linkInfoError ? 'Could not verify link' : 'Import settings'}</span>
+                                <span>{linkInfo?.title || 'Video link detected'}</span>
+                            </div>
+
+                            <div className="link-download-grid">
+                                <div className="link-download-block">
+                                    <span className="link-download-label">Video Quality</span>
+                                    <div className="link-download-pill-row">
+                                        {renderedQualityOptions.map((q) => (
+                                            <button
+                                                key={q}
+                                                onClick={() => setLinkQuality(q)}
+                                                className={`quality-pill ${linkQuality === q ? 'active' : ''}`}
+                                                disabled={linkInfoLoading}
+                                                title={`Download the source near ${q}p quality before clipping.`}
+                                            >
+                                                {q}p
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="link-download-block">
+                                    <span className="link-download-label">Estimated Size</span>
+                                    <strong>{formatBytes(estimatedDownloadSize)}</strong>
+                                    <span>{linkInfo?.duration ? `${Math.ceil(linkInfo.duration / 60)} min source` : 'Waiting for duration'}</span>
+                                </div>
+
+                                <div className="link-download-block">
+                                    <span className="link-download-label">Downloaded</span>
+                                    <strong>{formatBytes(downloadedEstimate)} / {formatBytes(estimatedDownloadSize)}</strong>
+                                    <span>{linkInfoLoading ? 'Fetching source metadata' : linkInfoError ? linkInfoError : 'Ready for clip generation'}</span>
+                                </div>
+                            </div>
+
+                            <div className="link-download-progress">
+                                <div className="link-download-progress-fill" style={{ width: `${linkPrepProgress}%` }} />
+                            </div>
+                        </div>
+                    )}
+
                     <div style={{ display: 'flex', gap: 16 }}>
-                        <button className="get-clips-btn" onClick={handleGetClips} disabled={hasCandidateLink && linkInfoLoading}>
-                             {hasCandidateLink ? (linkInfoLoading ? 'Analyzing Link...' : 'Generate Clips') : 'Select File to Upload'}
+                        <button
+                            className="get-clips-btn"
+                            onClick={handleGetClips}
+                            title={hasCandidateLink ? 'Open the workflow page and start importing this link for clipping.' : 'Choose a local video file to import into ClipForge.'}
+                        >
+                             {hasCandidateLink ? 'Generate Clips' : 'Select File to Upload'}
                         </button>
                         
                         {!hasCandidateLink && (
@@ -325,42 +411,38 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                     style={{ gridColumn: '2 / 3', gridRow: '1 / 2', display: 'flex', flexDirection: 'column', gap: '16px' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>AI Studio Tools</h3>
+                        <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Apps</h3>
                     </div>
-                    
+
+                    <div className="dashboard-app-grid">
                     {[
-                        { id: 'long', title: 'Viral Shorts Generator', icon: Sparkles },
-                        { id: 'captions', title: 'Dynamic AI Captions', icon: ClosedCaption },
-                        { id: 'reframe', title: 'Smart Auto-Reframe', icon: Crop },
+                        { id: 'scene-map', title: 'Scene Map Flow', icon: Workflow, mode: 'app' as const },
+                        { id: 'long', title: 'Viral Shorts Generator', icon: Sparkles, mode: 'app' as const },
+                        { id: 'captions', title: 'Dynamic AI Captions', icon: ClosedCaption, mode: 'modal' as const },
+                        { id: 'reframe', title: 'Smart Auto-Reframe', icon: Crop, mode: 'modal' as const },
                     ].map((tool) => (
-                        <div 
+                        <button
+                            type="button"
                             key={tool.id}
-                            onClick={() => setFeatureModal(tool.id as FeatureModalType)}
-                            className="glass-raised"
-                            style={{
-                                padding: '16px 20px', borderRadius: 'var(--radius-md)',
-                                display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer',
-                                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+                            onClick={() => {
+                                if (tool.mode === 'app') {
+                                    onLaunchWorkflowApp();
+                                    return;
+                                }
+                                setFeatureModal(tool.id as FeatureModalType);
                             }}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.transform = 'translateX(6px)';
-                                e.currentTarget.style.borderColor = 'var(--border-bright)';
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.transform = 'translateX(0)';
-                                e.currentTarget.style.borderColor = 'var(--border-base)';
-                            }}
+                            className={`dashboard-app-tile ${tool.mode === 'app' ? 'dashboard-app-tile-launcher' : ''}`}
                         >
-                            <div style={{ width: 40, height: 40, borderRadius: 10, background: `rgba(255,255,255,0.05)`, border: '1px solid var(--border-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <div className="dashboard-app-icon">
                                 <tool.icon size={20} color="var(--text-primary)" />
                             </div>
-                            <div style={{ flex: 1 }}>
-                                <h4 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>{tool.title}</h4>
-                                <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Click to launch workflow</p>
-                            </div>
-                            <CustomArrow size={20} tone="light" />
-                        </div>
+                            <span className="dashboard-app-title">{tool.title}</span>
+                            <span className="dashboard-app-caption">
+                                {tool.mode === 'app' ? 'Open app' : 'Open tool'}
+                            </span>
+                        </button>
                     ))}
+                    </div>
                 </motion.div>
 
                 {/* 3. Recent Projects Bento Grid (Bottom Full Width) */}

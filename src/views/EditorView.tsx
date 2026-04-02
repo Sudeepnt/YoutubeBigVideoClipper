@@ -81,6 +81,59 @@ type EditorDraft = {
 
 const EDITOR_DRAFT_PREFIX = 'clipforge-editor-draft';
 const DEFAULT_HIGHLIGHT_WORDS = 'viral, hook, money, growth';
+const COMMON_STOPWORDS = new Set([
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'get', 'got',
+    'has', 'have', 'he', 'her', 'his', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'me',
+    'my', 'of', 'on', 'or', 'our', 'she', 'so', 'that', 'the', 'their', 'them', 'there',
+    'they', 'this', 'to', 'up', 'was', 'we', 'were', 'what', 'when', 'who', 'with', 'you',
+    'your'
+]);
+
+type CaptionWord = TranscriptSegment['words'][number];
+type CaptionWordWithIndex = CaptionWord & { globalIndex: number };
+
+function splitCaptionWords(words: CaptionWord[], maxLines = 1): CaptionWordWithIndex[][] {
+    const indexedWords = words.map((word, globalIndex) => ({ ...word, globalIndex }));
+    if (maxLines <= 1 || indexedWords.length <= 1) {
+        return indexedWords.length ? [indexedWords] : [];
+    }
+
+    let runningLength = 0;
+    const totalLength = indexedWords.reduce((sum, word) => sum + word.word.length, 0);
+    const targetLength = totalLength / 2;
+    let splitIndex = 1;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (let index = 1; index < indexedWords.length; index += 1) {
+        runningLength += indexedWords[index - 1].word.length;
+        const remainingLength = totalLength - runningLength;
+        const balanceScore = Math.abs(runningLength - targetLength) + Math.abs(remainingLength - targetLength);
+        const lineCountPenalty = Math.abs(indexedWords.slice(0, index).length - indexedWords.slice(index).length) * 3;
+        const score = balanceScore + lineCountPenalty;
+        if (score < bestScore) {
+            bestScore = score;
+            splitIndex = index;
+        }
+    }
+
+    return [indexedWords.slice(0, splitIndex), indexedWords.slice(splitIndex)].filter((line) => line.length > 0);
+}
+
+function findEmphasisWordIndex(words: CaptionWord[], normalizeWord: (value: string) => string) {
+    let bestIndex = 0;
+    let bestScore = -1;
+
+    words.forEach((word, index) => {
+        const normalized = normalizeWord(word.word);
+        const weight = normalized.length - (COMMON_STOPWORDS.has(normalized) ? 4 : 0);
+        if (weight > bestScore) {
+            bestScore = weight;
+            bestIndex = index;
+        }
+    });
+
+    return bestIndex;
+}
 
 function buildClipTranscript(activeClip: ClipSuggestion | null) {
     const clipStart = activeClip?.startMs ?? 0;
@@ -418,7 +471,6 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         const secondaryColor = toAssColor(preset.secondaryColor);
         const outlineColor = toAssColor(preset.outlineColor);
         const backColor = toAssColor(preset.backColor);
-        const emphasisColor = toAssColor(highlightColor);
 
         let ass = '';
         ass += '[Script Info]\n';
@@ -440,17 +492,23 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         }
 
         editingTranscript.forEach((segment) => {
-            const styledWords = segment.words.map((word) => {
+            const emphasisWordIndex = preset.autoEmphasis === 'keyword'
+                ? findEmphasisWordIndex(segment.words, normalizeWord)
+                : -1;
+            const emphasisAssColor = toAssColor(preset.emphasisColor ?? highlightColor);
+            const emphasisScale = Math.round((preset.emphasisScale ?? 1) * 100);
+            const styledLines = splitCaptionWords(segment.words, preset.maxLines ?? 1).map((line) => line.map((word) => {
                 const normalized = normalizeWord(word.word);
-                const shouldEmphasize = normalizedHighlightWords.has(normalized);
+                const shouldEmphasize = normalizedHighlightWords.has(normalized)
+                    || word.globalIndex === emphasisWordIndex;
                 const finalWord = preset.uppercase ? word.word.toUpperCase() : word.word;
                 if (!shouldEmphasize) return escapeAssText(finalWord);
-                const underlineStart = highlightUnderline ? '\\u1' : '';
-                const underlineEnd = highlightUnderline ? '\\u0' : '';
-                return `{\\c${emphasisColor}${underlineStart}}${escapeAssText(finalWord)}{\\r${underlineEnd}}`;
-            });
+                const underlineStart = highlightUnderline && preset.autoEmphasis !== 'keyword' ? '\\u1' : '';
+                const underlineEnd = highlightUnderline && preset.autoEmphasis !== 'keyword' ? '\\u0' : '';
+                return `{\\c${emphasisAssColor}\\fscx${emphasisScale}\\fscy${emphasisScale}${underlineStart}}${escapeAssText(finalWord)}{\\r${underlineEnd}}`;
+            }).join(' '));
 
-            ass += `Dialogue: 0,${formatAssTime(segment.start)},${formatAssTime(segment.end)},Base,,0,0,0,,${styledWords.join(' ')}\n`;
+            ass += `Dialogue: 0,${formatAssTime(segment.start)},${formatAssTime(segment.end)},Base,,0,0,0,,${styledLines.join('\\N')}\n`;
         });
 
         return ass;
@@ -530,6 +588,16 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         () => editingTranscript.find((segment) => currentTime >= segment.start && currentTime < segment.end) ?? null,
         [currentTime, editingTranscript]
     );
+    const previewCaptionLines = useMemo(
+        () => activeCaptionSegment ? splitCaptionWords(activeCaptionSegment.words, captionPreset.maxLines ?? 1) : [],
+        [activeCaptionSegment, captionPreset.maxLines]
+    );
+    const autoEmphasisWordIndex = useMemo(
+        () => activeCaptionSegment && captionPreset.autoEmphasis === 'keyword'
+            ? findEmphasisWordIndex(activeCaptionSegment.words, normalizeWord)
+            : -1,
+        [activeCaptionSegment, captionPreset.autoEmphasis]
+    );
 
     const previewCaptionStyle: CSSProperties = useMemo(() => {
         const placementStyle: Record<CaptionPlacement, CSSProperties> = {
@@ -549,12 +617,16 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
             fontStyle: captionPreset.italic ? 'italic' : 'normal',
             color: captionPreset.primaryColor,
             textTransform: captionPreset.uppercase ? 'uppercase' : 'none',
-            textShadow: `0 0 ${Math.max(1, captionPreset.outline)}px ${captionPreset.outlineColor}, 0 2px ${Math.max(1, captionPreset.shadow)}px rgba(0,0,0,0.9)`,
+            WebkitTextStroke: `${Math.max(1, captionPreset.outline)}px ${captionPreset.outlineColor}`,
+            paintOrder: 'stroke fill',
+            textShadow: `0 2px ${Math.max(1, captionPreset.shadow)}px rgba(0,0,0,0.9)`,
             background: captionPreset.borderStyle === 3 ? 'rgba(15, 16, 20, 0.72)' : 'transparent',
             borderRadius: 6,
             padding: captionPreset.borderStyle === 3 ? '8px 12px' : '0',
-            lineHeight: 1.35,
+            lineHeight: 1.08,
             zIndex: 4,
+            display: 'grid',
+            gap: 6,
             ...placementStyle[captionPlacement],
         };
     }, [captionPlacement, captionPreset, fontFamilyOverride]);
@@ -991,15 +1063,32 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
                             <video ref={videoRef} src={clipVideoSrc} style={{ width: '100%', height: '100%', objectFit: layoutMode === 'Fill' ? 'cover' : 'contain', background: '#000' }} playsInline />
                             {captionPreset.templateId !== 'none' && activeCaptionSegment && (
                                 <div style={previewCaptionStyle}>
-                                    {activeCaptionSegment.words.map((word, index) => {
-                                        const normalized = normalizeWord(word.word);
-                                        const isHit = normalizedHighlightWords.has(normalized);
-                                        return (
-                                            <span key={`${word.start}-${index}`} style={{ color: isHit ? highlightColor : captionPreset.primaryColor, textDecoration: isHit && highlightUnderline ? 'underline' : 'none', textDecorationThickness: isHit && highlightUnderline ? 2 : undefined, marginRight: 6 }}>
-                                                {captionPreset.uppercase ? word.word.toUpperCase() : word.word}
-                                            </span>
-                                        );
-                                    })}
+                                    {previewCaptionLines.map((line, lineIndex) => (
+                                        <div key={`line-${lineIndex}`} style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+                                            {line.map((word) => {
+                                                const normalized = normalizeWord(word.word);
+                                                const isHit = normalizedHighlightWords.has(normalized)
+                                                    || word.globalIndex === autoEmphasisWordIndex;
+                                                const shouldUnderline = isHit && highlightUnderline && captionPreset.autoEmphasis !== 'keyword';
+                                                const baseFontSize = Math.max(16, Math.round(captionPreset.fontSize * 0.42));
+                                                return (
+                                                    <span
+                                                        key={`${word.start}-${word.globalIndex}`}
+                                                        style={{
+                                                            display: 'inline-block',
+                                                            color: isHit ? (captionPreset.emphasisColor ?? highlightColor) : captionPreset.primaryColor,
+                                                            textDecoration: shouldUnderline ? 'underline' : 'none',
+                                                            textDecorationThickness: shouldUnderline ? 2 : undefined,
+                                                            fontSize: isHit ? Math.round(baseFontSize * (captionPreset.emphasisScale ?? 1)) : baseFontSize,
+                                                            lineHeight: 1,
+                                                        }}
+                                                    >
+                                                        {captionPreset.uppercase ? word.word.toUpperCase() : word.word}
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                    ))}
                                 </div>
                             )}
                             {!isPlaying && (

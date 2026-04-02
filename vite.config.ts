@@ -57,6 +57,28 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<CmdR
   });
 }
 
+async function runYtDlpWithFallback(args: string[]): Promise<CmdResult> {
+  const attempts = [
+    args,
+    ['--extractor-args', 'youtube:player_client=android', ...args],
+    ['--extractor-args', 'youtube:player_client=tv,android', ...args],
+    ['--cookies-from-browser', 'chrome', ...args],
+    ['--cookies-from-browser', 'brave', ...args],
+    ['--cookies-from-browser', 'safari', ...args],
+  ];
+
+  let lastResult: CmdResult | null = null;
+  for (const attempt of attempts) {
+    const result = await runCommand('yt-dlp', attempt);
+    if (result.code === 0) {
+      return result;
+    }
+    lastResult = result;
+  }
+
+  return lastResult ?? { code: 1, stdout: '', stderr: 'yt-dlp failed before returning output.' };
+}
+
 function parseJsonSafe<T = JsonObject>(value: string): T | null {
   try {
     return JSON.parse(value) as T;
@@ -121,7 +143,7 @@ function buildQualityOptions(maxHeight: number): number[] {
 }
 
 function formatSelectorForMaxHeight(maxHeight: number): string {
-  return `bv*[height<=?${maxHeight}][ext=mp4]+ba[ext=m4a]/b[height<=?${maxHeight}][ext=mp4]/b[height<=?${maxHeight}]`;
+  return `bv*[height<=?${maxHeight}][ext=mp4]+ba[ext=m4a]/b[height<=?${maxHeight}][ext=mp4]/18/b[height<=?${maxHeight}]/best[height<=?${maxHeight}]/b/best`;
 }
 
 function resolvePublicFilePath(publicUrlPath: string): string {
@@ -362,7 +384,7 @@ function linkImportPlugin(): Plugin {
           const ytDlpAvailable = checkYtDlp.code === 0;
 
           if (ytDlpAvailable) {
-            const metadataResult = await runCommand('yt-dlp', ['--no-playlist', '--dump-single-json', '--no-warnings', url]);
+            const metadataResult = await runYtDlpWithFallback(['--no-playlist', '--dump-single-json', '--no-warnings', url]);
             if (metadataResult.code !== 0) {
               sendJson(res, 500, { error: metadataResult.stderr.trim() || 'Unable to inspect link metadata.' });
               return;
@@ -451,7 +473,7 @@ function linkImportPlugin(): Plugin {
           let downloadedPath = '';
 
           if (ytDlpAvailable) {
-            const metadataResult = await runCommand('yt-dlp', ['--no-playlist', '--dump-single-json', '--no-warnings', url]);
+            const metadataResult = await runYtDlpWithFallback(['--no-playlist', '--dump-single-json', '--no-warnings', url]);
             metadata = parseJsonSafe<{ title?: string; duration?: number; filesize?: number }>(metadataResult.stdout) ?? {};
 
             const fileStem = sanitizeFilePart(`${metadata.title ?? 'video'}_${importId.slice(0, 8)}`);
@@ -477,12 +499,7 @@ function linkImportPlugin(): Plugin {
               url,
             ];
 
-            let downloadResult = await runCommand('yt-dlp', firstPassArgs);
-
-            if (downloadResult.code !== 0) {
-              const secondPassArgs = ['--cookies-from-browser', 'chrome', ...firstPassArgs];
-              downloadResult = await runCommand('yt-dlp', secondPassArgs);
-            }
+            const downloadResult = await runYtDlpWithFallback(firstPassArgs);
 
             if (downloadResult.code !== 0) {
               sendJson(res, 500, {
@@ -529,6 +546,7 @@ function linkImportPlugin(): Plugin {
             sourceType: 'link',
             sourceUrl: url,
             sourcePath: `/imports/${fileName}`,
+            nativeSourcePath: downloadedPath,
             fileName,
             fileSize: probe.fileSize || metadata.filesize || 0,
             duration: probe.duration || metadata.duration || 0,

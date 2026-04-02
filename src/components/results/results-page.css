@@ -1,20 +1,20 @@
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap');
 
 .results-page {
-  --rp-bg: #010204;
-  --rp-panel: #0b0d11;
-  --rp-panel-soft: #0f1116;
-  --rp-border: rgba(255, 255, 255, 0.09);
-  --rp-border-soft: rgba(255, 255, 255, 0.06);
+  --rp-bg: #02050b;
+  --rp-panel: #0c1220;
+  --rp-panel-soft: #101726;
+  --rp-border: rgba(179, 206, 255, 0.12);
+  --rp-border-soft: rgba(179, 206, 255, 0.08);
   --rp-text: #f8fafc;
-  --rp-text-muted: #a3acbb;
-  --rp-score: #ffffff;
+  --rp-text-muted: #9fb1cb;
+  --rp-score: #f3f7ff;
 
   width: 100%;
   min-height: 100vh;
   display: flex;
   background:
-    radial-gradient(1600px 500px at 55% -230px, rgba(112, 126, 146, 0.12), transparent 56%),
+    radial-gradient(1600px 500px at 55% -230px, rgba(94, 142, 226, 0.14), transparent 56%),
     var(--rp-bg);
   color: var(--rp-text);
   font-family: 'Manrope', 'Avenir Next', 'Segoe UI', sans-serif;
@@ -34,7 +34,7 @@
 .results-sidebar {
   width: 74px;
   border-right: 1px solid var(--rp-border-soft);
-  background: rgba(5, 7, 10, 0.94);
+  background: rgba(7, 10, 18, 0.94);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1028,18 +1028,14 @@
 
 .viewer-video-caption {
   position: absolute;
-  top: 12px;
+  bottom: 14%;
   left: 50%;
   transform: translateX(-50%);
-  max-width: calc(100% - 26px);
-  background: rgba(250, 250, 250, 0.92);
-  color: #0f172a;
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1.3;
-  font-weight: 700;
-  text-align: center;
-  padding: 8px 10px;
+  width: calc(100% - 30px);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 3;
 }
 
 .viewer-video-top-overlay {
