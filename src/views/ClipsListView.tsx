@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import ResultsPage from '../components/results/ResultsPage';
 import { CaptionStyleTone, ClipDetails, ClipItem } from '../components/results/types';
+import { buildScheduledDate, formatScheduledLabel } from '../lib/clipScheduling';
 import { ClipSuggestion, Project, TranscriptSegment, ViewType } from '../types';
+import { getProjectTranscript, transcribeSource, type StoredProjectTranscript } from '../lib/workflowApi';
+import { isTauri } from '@tauri-apps/api/core';
 
 interface ClipsListViewProps {
   project?: Project | null;
@@ -26,8 +29,28 @@ const SAMPLE_TITLES = [
 ];
 
 const SAMPLE_DURATIONS = ['00:02:12', '00:00:44', '00:00:46', '00:00:48', '00:00:15', '00:00:20'];
+const CATEGORY_ROTATION = [
+  'Useful quote',
+  'Podcast insight',
+  'Journey & tutorial',
+  'Bold opinion',
+  'Motivation',
+  'Creator lesson',
+];
 
-const INTERNET_VIDEO_URL = 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4';
+const BADGE_ROTATION = [
+  [{ label: 'Useful quotes', tone: 'gold' as const }],
+  [{ label: 'Retention hook', tone: 'violet' as const }],
+  [
+    { label: 'Bold opinion hook', tone: 'gold' as const },
+    { label: 'Journey & tutorial', tone: 'slate' as const },
+  ],
+  [{ label: 'Podcast insight', tone: 'emerald' as const }],
+  [{ label: 'Story payoff', tone: 'violet' as const }],
+  [{ label: 'Motivation clip', tone: 'emerald' as const }],
+];
+
+const INTERNET_VIDEO_URL = '/caption_ref.mp4';
 
 const SAMPLE_MEDIA = [
   {
@@ -63,6 +86,11 @@ const FALLBACK_CLIPS: ClipItem[] = SAMPLE_TITLES.map((title, index) => ({
   duration: SAMPLE_DURATIONS[index],
   thumbnailUrl: SAMPLE_MEDIA[index].thumbnailUrl,
   videoUrl: SAMPLE_MEDIA[index].videoUrl,
+  timelineLabel: buildTimelineLabel(index * 18_000, index * 18_000 + parseClockToMs(SAMPLE_DURATIONS[index])),
+  scheduledLabel: formatScheduledLabel(buildScheduledDate(index)),
+  categoryLabel: CATEGORY_ROTATION[index % CATEGORY_ROTATION.length],
+  editLabel: 'Quick edit',
+  badges: BADGE_ROTATION[index % BADGE_ROTATION.length],
   isPlayable: index === 1,
   isSelected: index === 1,
   hasAutoHook: index < 5,
@@ -79,8 +107,81 @@ export default function ClipsListView(props: ClipsListViewProps) {
   const [previewClipId, setPreviewClipId] = useState<string | null>(null);
   const [viewerClipId, setViewerClipId] = useState<string | null>(null);
   const [clipDetailsById, setClipDetailsById] = useState<Record<string, ClipDetails>>({});
+  const [projectTranscript, setProjectTranscript] = useState<StoredProjectTranscript | null>(null);
 
   const useFallbackData = clips.length === 0;
+  const clipTranscriptRange = useMemo(() => {
+    if (clips.length === 0) {
+      return null;
+    }
+
+    return {
+      startMs: Math.min(...clips.map((clip) => clip.startMs)),
+      endMs: Math.max(...clips.map((clip) => clip.endMs)),
+    };
+  }, [clips]);
+
+  useEffect(() => {
+    if (!project?.id || !isTauri() || useFallbackData) {
+      setProjectTranscript(null);
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | undefined;
+
+    const loadTranscript = async () => {
+      try {
+        let transcript = await getProjectTranscript(project.id);
+        if (cancelled) return;
+
+        const transcriptCoversClipRange = Boolean(
+          transcript
+          && clipTranscriptRange
+          && (transcript.sourceStartMs ?? 0) <= clipTranscriptRange.startMs
+          && (transcript.sourceEndMs ?? Number.MAX_SAFE_INTEGER) >= clipTranscriptRange.endMs
+        );
+
+        const shouldStartTranscription = Boolean(project.sourcePath)
+          && Boolean(clipTranscriptRange)
+          && (!transcript || transcript.status === 'error' || !transcriptCoversClipRange);
+
+        if (shouldStartTranscription) {
+          setProjectTranscript(createPendingTranscript(
+            project.id,
+            transcript?.modelSize ?? 'medium',
+            clipTranscriptRange?.startMs ?? null,
+            clipTranscriptRange?.endMs ?? null,
+          ));
+          transcript = await transcribeSource({
+            projectId: project.id,
+            videoPath: project.sourcePath,
+            modelSize: transcript?.modelSize ?? 'medium',
+            startMs: clipTranscriptRange?.startMs,
+            endMs: clipTranscriptRange?.endMs,
+          });
+          if (cancelled) return;
+        }
+
+        setProjectTranscript(transcript);
+
+        if (transcript?.status === 'processing') {
+          pollTimer = window.setTimeout(loadTranscript, 2500);
+        }
+      } catch (error) {
+        console.error('Failed to load project transcript', error);
+      }
+    };
+
+    void loadTranscript();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [clipTranscriptRange, project?.id, project?.sourcePath, useFallbackData]);
 
   const resultClips = useMemo<ClipItem[]>(() => {
     if (useFallbackData) {
@@ -89,25 +190,33 @@ export default function ClipsListView(props: ClipsListViewProps) {
 
     return clips.map((clip, index) => {
       const trimmedHook = sanitizeTitle(clip.hook);
-      const fallbackMedia = SAMPLE_MEDIA[index % SAMPLE_MEDIA.length];
-      const fallbackTitle = SAMPLE_TITLES[index % SAMPLE_TITLES.length];
+      const realTitle = trimmedHook || `Clip ${index + 1}`;
+      const realThumbnail = clip.thumbnailUrl ?? project?.thumbnailUrl ?? '';
 
       return {
         id: clip.id,
         clipId: clip.id,
-        title: trimmedHook.length > 18 ? trimmedHook : fallbackTitle,
-        score: SCORE_RANKING[index] ?? normalizeScore(clip.score),
+        title: realTitle,
+        score: normalizeScore(clip.score),
         duration: formatAsClock(clip.endMs - clip.startMs),
-        thumbnailUrl: clip.thumbnailUrl ?? fallbackMedia.thumbnailUrl,
-        videoUrl: clip.videoUrl ?? fallbackMedia.videoUrl,
-        isPlayable: index === 1,
+        thumbnailUrl: realThumbnail,
+        videoUrl: clip.videoUrl,
+        videoPath: clip.videoPath,
+        aspectRatio: clip.aspectRatio ?? '9:16',
+        captionStyle: normalizeCaptionStyle(clip.captionStyle),
+        timelineLabel: buildTimelineLabel(clip.startMs, clip.endMs),
+        scheduledLabel: formatScheduledLabel(buildScheduledDate(index)),
+        categoryLabel: inferCategoryLabel(clip, index),
+        editLabel: inferEditLabel(clip.endMs - clip.startMs),
+        badges: buildInsightBadges(clip, index),
+        isPlayable: Boolean(clip.videoUrl),
         isSelected: clip.selected,
         hasAutoHook: index < 10,
-        showFavoriteAction: index === 1,
-        showCommentAction: index === 1,
+        showFavoriteAction: false,
+        showCommentAction: false,
       };
     });
-  }, [clips, useFallbackData]);
+  }, [clips, project?.thumbnailUrl, useFallbackData]);
 
   useEffect(() => {
     setClipDetailsById((previous) => {
@@ -115,6 +224,10 @@ export default function ClipsListView(props: ClipsListViewProps) {
 
       resultClips.forEach((clip, index) => {
         const created = createClipDetails(clip, index);
+        const sourceClip = clips.find((item) => item.id === clip.id);
+        const transcriptWords = sourceClip ? getClipTranscriptWords(projectTranscript, sourceClip) : [];
+        const transcriptSegments = buildTranscriptSegments(transcriptWords, 0);
+        const summary = buildSceneSummary(clip.title, transcriptWords);
         const existing = previous[clip.id];
 
         next[clip.id] = existing
@@ -126,16 +239,18 @@ export default function ClipsListView(props: ClipsListViewProps) {
               duration: created.duration,
               thumbnailUrl: created.thumbnailUrl,
               videoUrl: created.videoUrl,
+              aspectRatio: created.aspectRatio,
               metrics: created.metrics,
-              transcript: created.transcript,
-              summary: created.summary,
+              transcript: transcriptSegments,
+              transcriptWords,
+              summary,
             }
           : created;
       });
 
       return next;
     });
-  }, [resultClips]);
+  }, [clips, projectTranscript, resultClips]);
 
   useEffect(() => {
     if (!viewerClipId) return;
@@ -150,11 +265,6 @@ export default function ClipsListView(props: ClipsListViewProps) {
   }, [resultClips, searchValue]);
 
   const activeViewerClip = viewerClipId ? clipDetailsById[viewerClipId] ?? null : null;
-
-  const viewerCaptionText = useMemo(() => {
-    if (!activeViewerClip) return '';
-    return buildCaption(activeViewerClip.title);
-  }, [activeViewerClip]);
 
   const handlePreviewClip = (clipId: string) => {
     setPreviewClipId((current) => (current === clipId ? null : clipId));
@@ -186,6 +296,21 @@ export default function ClipsListView(props: ClipsListViewProps) {
       return {
         ...previous,
         [viewerClipId]: {
+          ...current,
+          aspectRatio,
+        },
+      };
+    });
+  };
+
+  const handleClipAspectRatioChange = (clipId: string, aspectRatio: ClipDetails['aspectRatio']) => {
+    setClipDetailsById((previous) => {
+      const current = previous[clipId];
+      if (!current) return previous;
+
+      return {
+        ...previous,
+        [clipId]: {
           ...current,
           aspectRatio,
         },
@@ -237,19 +362,49 @@ export default function ClipsListView(props: ClipsListViewProps) {
       onBack={onBack}
       onNavigate={(view) => onViewChange?.(view)}
       activeSidebarItem="clips"
+      clipDetailsById={clipDetailsById}
       viewerClip={activeViewerClip}
-      viewerCaptionText={viewerCaptionText}
       onCloseViewer={() => setViewerClipId(null)}
       onPreviousViewerClip={() => handleCycleViewerClip(-1)}
       onNextViewerClip={() => handleCycleViewerClip(1)}
       onViewerAspectRatioChange={handleViewerAspectRatioChange}
+      onClipAspectRatioChange={handleClipAspectRatioChange}
       onViewerCaptionStyleChange={handleViewerCaptionStyleChange}
       onEditViewerClip={handleEditActiveClip}
+      onEditClipFromList={(clipId) => {
+        const targetClip = clips.find((clip) => clip.id === clipId);
+        if (!targetClip) return;
+        onEditClip(targetClip);
+      }}
     />
   );
 }
 
+function createPendingTranscript(
+  projectId: string,
+  modelSize: string,
+  sourceStartMs: number | null,
+  sourceEndMs: number | null,
+): StoredProjectTranscript {
+  const now = new Date().toISOString();
+  return {
+    id: `pending-${projectId}`,
+    projectId,
+    modelSize,
+    status: 'processing',
+    sourceStartMs,
+    sourceEndMs,
+    words: [],
+    language: null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 function createClipDetails(clip: ClipItem, index: number): ClipDetails {
+  const initialCaptionStyle = normalizeCaptionStyle(clip.captionStyle);
+
   return {
     id: clip.id,
     rank: index + 1,
@@ -258,12 +413,28 @@ function createClipDetails(clip: ClipItem, index: number): ClipDetails {
     duration: clip.duration,
     thumbnailUrl: clip.thumbnailUrl,
     videoUrl: clip.videoUrl,
+    videoPath: clip.videoPath,
     metrics: buildMetricsFromScore(clip.score),
-    transcript: buildTranscriptSegments(index),
-    summary: buildSceneSummary(clip.title),
-    captionStyle: 'karaoke',
-    aspectRatio: '9:16',
+    transcript: [],
+    transcriptWords: [],
+    summary: buildSceneSummary(clip.title, []),
+    captionStyle: initialCaptionStyle,
+    aspectRatio: clip.aspectRatio ?? '9:16',
   };
+}
+
+function normalizeCaptionStyle(value: string | undefined): CaptionStyleTone {
+  switch (value) {
+    case 'classic':
+    case 'tiktok':
+    case 'box':
+    case 'cinematic':
+    case 'outline':
+    case 'bold-center':
+      return value;
+    default:
+      return 'classic';
+  }
 }
 
 function formatAsClock(milliseconds: number): string {
@@ -273,6 +444,20 @@ function formatAsClock(milliseconds: number): string {
   const seconds = totalSeconds % 60;
 
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function formatAsShortClock(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function parseClockToMs(clock: string): number {
+  const parts = clock.split(':').map((value) => Number(value));
+  const [hours = 0, minutes = 0, seconds = 0] = parts.length === 3 ? parts : [0, parts[0] ?? 0, parts[1] ?? 0];
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000;
 }
 
 function normalizeScore(score: number): number {
@@ -301,46 +486,128 @@ function buildMetricsFromScore(score: number): ClipDetails['metrics'] {
   return { hook: 'B-', flow: 'B', value: 'B+', trend: 'C+' };
 }
 
-function buildSceneSummary(title: string): string[] {
+function buildSceneSummary(title: string, transcriptWords: ClipDetails['transcriptWords']): string[] {
+  if (transcriptWords.length > 0) {
+    const excerpt = transcriptWords
+      .slice(0, 18)
+      .map((word) => word.word)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return [
+      `Transcribed from the source with faster-whisper medium and synced to this clip window.`,
+      excerpt ? `Opening transcript slice: "${excerpt}${transcriptWords.length > 18 ? '…' : ''}"` : `Transcript is ready for "${title}".`,
+    ];
+  }
+
   return [
     `Discover a focused story arc in "${title}" with a strong first impression that sustains attention.`,
     'The scene emphasizes momentum, emotional clarity, and direct audience value to improve retention.',
   ];
 }
 
-function buildTranscriptSegments(index: number): TranscriptSegment[] {
-  const offset = index * 20_000;
+function buildTranscriptSegments(words: ClipDetails['transcriptWords'], _clipStartMs: number): TranscriptSegment[] {
+  if (!words.length) {
+    return [];
+  }
 
-  return [
-    {
-      id: 1,
-      start: 48_000 + offset,
-      end: 61_000 + offset,
-      text: 'What is a goal that you are working on right now?',
-      words: [],
-    },
-    {
-      id: 2,
-      start: 61_000 + offset,
-      end: 84_000 + offset,
-      text: 'I love diving because it brings joy, freedom, and connection to new places.',
-      words: [],
-    },
-    {
-      id: 3,
-      start: 84_000 + offset,
-      end: 101_000 + offset,
-      text: 'My goal is to travel, learn from different cultures, and share this journey through short videos.',
-      words: [],
-    },
-  ];
+  const segments: TranscriptSegment[] = [];
+  let currentWords: ClipDetails['transcriptWords'] = [];
+  let currentStart = words[0].start;
+
+  for (const word of words) {
+    const previousWord = currentWords[currentWords.length - 1];
+    const gapTooLarge = previousWord ? word.start - previousWord.end > 1200 : false;
+    const segmentTooLong = currentWords.length >= 14;
+
+    if ((gapTooLarge || segmentTooLong) && currentWords.length > 0) {
+      segments.push({
+        id: segments.length + 1,
+        start: currentStart,
+        end: previousWord.end,
+        text: currentWords.map((item) => item.word).join(' ').replace(/\s+/g, ' ').trim(),
+        words: currentWords,
+      });
+      currentWords = [];
+      currentStart = word.start;
+    }
+
+    currentWords.push({
+      ...word,
+      start: word.start,
+      end: word.end,
+    });
+  }
+
+  const lastWord = currentWords[currentWords.length - 1];
+  if (currentWords.length > 0 && lastWord) {
+    segments.push({
+      id: segments.length + 1,
+      start: currentStart,
+      end: lastWord.end,
+      text: currentWords.map((item) => item.word).join(' ').replace(/\s+/g, ' ').trim(),
+      words: currentWords,
+    });
+  }
+
+  return segments;
 }
 
-function buildCaption(title: string): string {
-  const cleaned = (title.split(':')[0] || title)
-    .replace(/[^\w\s]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 4);
-  return cleaned.join(' ') || 'TO GET STARTED';
+function getClipTranscriptWords(projectTranscript: StoredProjectTranscript | null, clip: ClipSuggestion): ClipDetails['transcriptWords'] {
+  if (!projectTranscript?.words?.length) {
+    return [];
+  }
+
+  return projectTranscript.words
+    .filter((word) => word.end > clip.startMs && word.start < clip.endMs)
+    .map((word) => ({
+      ...word,
+      start: Math.max(0, word.start - clip.startMs),
+      end: Math.max(0, Math.min(word.end, clip.endMs) - clip.startMs),
+    }));
+}
+
+function buildTimelineLabel(startMs: number, endMs: number): string {
+  return `${formatAsShortClock(startMs)}-${formatAsShortClock(endMs)}`;
+}
+
+function inferCategoryLabel(clip: ClipSuggestion, index: number): string {
+  const text = `${clip.hook} ${clip.reason}`.toLowerCase();
+
+  if (text.includes('quote')) return 'Useful quote';
+  if (text.includes('tutorial') || text.includes('learn')) return 'Journey & tutorial';
+  if (text.includes('podcast')) return 'Podcast insight';
+  if (text.includes('motivat') || text.includes('mindset')) return 'Motivation';
+
+  return CATEGORY_ROTATION[index % CATEGORY_ROTATION.length];
+}
+
+function inferEditLabel(durationMs: number): string {
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
+
+  if (seconds > 40) return 'Trim to 30s';
+  if (seconds > 20) return 'Tighten cuts';
+  return 'Quick edit';
+}
+
+function buildInsightBadges(clip: ClipSuggestion, index: number): ClipItem['badges'] {
+  const text = `${clip.hook} ${clip.reason}`.toLowerCase();
+
+  if (text.includes('quote')) {
+    return [{ label: 'Useful quotes', tone: 'gold' }];
+  }
+
+  if (text.includes('hook')) {
+    return [{ label: 'Bold opinion hook', tone: 'gold' }];
+  }
+
+  if (text.includes('tutorial') || text.includes('learn')) {
+    return [
+      { label: 'Journey & tutorial', tone: 'slate' },
+      { label: 'Save-worthy', tone: 'emerald' },
+    ];
+  }
+
+  return BADGE_ROTATION[index % BADGE_ROTATION.length];
 }

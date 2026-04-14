@@ -1,8 +1,6 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
-import Slider from 'rc-slider';
-import 'rc-slider/assets/index.css';
 import {
     Play,
     Trash2,
@@ -26,10 +24,16 @@ import {
     FileText,
     Check,
     Wand2,
-    PanelRightOpen,
+    SkipBack,
+    SkipForward,
+    Volume2,
+    Search,
+    ZoomIn,
+    ZoomOut,
+    Columns2,
 } from 'lucide-react';
 import { Project, ClipSuggestion, TranscriptSegment } from '../types';
-import { formatMs, mockTranscript } from '../store';
+import { mockTranscript } from '../store';
 import {
     CAPTION_PLACEMENTS,
     CAPTION_PRESETS,
@@ -91,6 +95,18 @@ const COMMON_STOPWORDS = new Set([
 
 type CaptionWord = TranscriptSegment['words'][number];
 type CaptionWordWithIndex = CaptionWord & { globalIndex: number };
+type TimelineThumbnail = {
+    id: number;
+    src: string;
+    timeMs: number;
+};
+
+type TimelineLayoutChip = {
+    id: string;
+    label: string;
+    startPercent: number;
+    widthPercent: number;
+};
 
 function splitCaptionWords(words: CaptionWord[], maxLines = 1): CaptionWordWithIndex[][] {
     const indexedWords = words.map((word, globalIndex) => ({ ...word, globalIndex }));
@@ -177,10 +193,36 @@ function buildClipTranscript(activeClip: ClipSuggestion | null) {
     }));
 }
 
+function formatEditorTimestamp(ms: number): string {
+    const totalCentiseconds = Math.max(0, Math.floor(ms / 10));
+    const centiseconds = totalCentiseconds % 100;
+    const totalSeconds = Math.floor(totalCentiseconds / 100);
+    const seconds = totalSeconds % 60;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const minutes = totalMinutes % 60;
+    const hours = Math.floor(totalMinutes / 60);
+
+    if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`;
+    }
+
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`;
+}
+
+function formatTimelineMarker(ms: number): string {
+    const totalSeconds = Math.floor(ms / 1000);
+    if (totalSeconds < 60) return String(totalSeconds);
+
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function EditorView({ project, activeClip, onBack }: EditorViewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const transcriptPanelRef = useRef<HTMLDivElement>(null);
     const ffmpegRef = useRef(new FFmpeg());
+    const timelineTrackRef = useRef<HTMLDivElement>(null);
 
     const clipStartMs = activeClip?.startMs ?? 0;
     const clipEndMs = activeClip?.endMs ?? clipStartMs + 15000;
@@ -215,6 +257,9 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
     const [isExporting, setIsExporting] = useState(false);
     const [ffmpegLoading, setFfmpegLoading] = useState(false);
     const [saveMessage, setSaveMessage] = useState('');
+    const [timelineThumbnails, setTimelineThumbnails] = useState<TimelineThumbnail[]>([]);
+    const [timelineFramesReady, setTimelineFramesReady] = useState(false);
+    const [timelineZoom, setTimelineZoom] = useState(62);
 
     const captionPreset = useMemo(() => getCaptionPresetById(captionPresetId), [captionPresetId]);
     const previewAspectRatio = useMemo(() => {
@@ -229,13 +274,6 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         if (aspectRatio === '4:5') return 'min(470px, 74%)';
         return 'min(430px, 64%)';
     }, [aspectRatio]);
-    const timelineThumbnails = useMemo(
-        () => Array.from({ length: 26 }, (_, index) => ({
-            id: index,
-            src: activeClip?.thumbnailUrl ?? project.thumbnailUrl ?? '/opus-capture/public.cdn.opus.pro/clip-web/images/thumbnail/tutorial_qAdcMVbrIeM__1.png'
-        })),
-        [activeClip?.thumbnailUrl, project.thumbnailUrl]
-    );
     const waveformBars = useMemo(
         () => Array.from({ length: 200 }, (_, index) => 8 + Math.round(Math.abs(Math.sin(index * 0.41)) * 24)),
         []
@@ -316,6 +354,15 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         const video = videoRef.current;
         if (!video) return;
 
+        const resetToClipStart = () => {
+            const nextTimeSec = usesProjectSource ? clipStartMs / 1000 : 0;
+            video.currentTime = nextTimeSec;
+            setCurrentTime(0);
+        };
+
+        video.pause();
+        setIsPlaying(false);
+
         const updateTime = () => {
             const relativeMs = video.currentTime * 1000 - (usesProjectSource ? clipStartMs : 0);
             const safeRelativeMs = Math.max(0, relativeMs);
@@ -330,11 +377,7 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         const updateDuration = () => {
             const nextDuration = usesProjectSource ? clipDurationMs : (video.duration * 1000 || clipDurationMs);
             setDuration(nextDuration);
-
-            if (usesProjectSource) {
-                video.currentTime = clipStartMs / 1000;
-                setCurrentTime(0);
-            }
+            resetToClipStart();
         };
 
         const handleEnded = () => setIsPlaying(false);
@@ -345,6 +388,8 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
 
         if (video.readyState >= 1) {
             updateDuration();
+        } else {
+            video.load();
         }
 
         return () => {
@@ -353,6 +398,137 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
             video.removeEventListener('ended', handleEnded);
         };
     }, [clipDurationMs, clipStartMs, trimRange, usesProjectSource, clipVideoSrc]);
+
+    useEffect(() => {
+        return () => {
+            timelineThumbnails.forEach((thumb) => {
+                if (thumb.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(thumb.src);
+                }
+            });
+        };
+    }, [timelineThumbnails]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const extractor = document.createElement('video');
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        const thumbnailCount = 18;
+
+        if (!clipVideoSrc || !context) {
+            setTimelineThumbnails([]);
+            setTimelineFramesReady(false);
+            return;
+        }
+
+        const seekVideo = (timeSec: number) => new Promise<void>((resolve, reject) => {
+            const handleSeeked = () => {
+                extractor.removeEventListener('seeked', handleSeeked);
+                extractor.removeEventListener('error', handleError);
+                resolve();
+            };
+            const handleError = () => {
+                extractor.removeEventListener('seeked', handleSeeked);
+                extractor.removeEventListener('error', handleError);
+                reject(new Error('Failed to seek while generating timeline frames.'));
+            };
+
+            extractor.addEventListener('seeked', handleSeeked, { once: true });
+            extractor.addEventListener('error', handleError, { once: true });
+            extractor.currentTime = Math.max(0, timeSec);
+        });
+
+        const canvasToBlob = () => new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob((blob) => {
+                if (blob) {
+                    resolve(blob);
+                    return;
+                }
+                reject(new Error('Failed to generate timeline thumbnail.'));
+            }, 'image/jpeg', 0.82);
+        });
+
+        const buildThumbnails = async () => {
+            try {
+                setTimelineFramesReady(false);
+                setTimelineThumbnails([]);
+
+                extractor.preload = 'auto';
+                extractor.muted = true;
+                extractor.playsInline = true;
+                extractor.src = clipVideoSrc;
+
+                await new Promise<void>((resolve, reject) => {
+                    const handleLoadedMetadata = () => {
+                        extractor.removeEventListener('loadedmetadata', handleLoadedMetadata);
+                        extractor.removeEventListener('error', handleError);
+                        resolve();
+                    };
+                    const handleError = () => {
+                        extractor.removeEventListener('loadedmetadata', handleLoadedMetadata);
+                        extractor.removeEventListener('error', handleError);
+                        reject(new Error('Failed to load source for timeline thumbnails.'));
+                    };
+
+                    extractor.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+                    extractor.addEventListener('error', handleError, { once: true });
+                });
+
+                if (cancelled) return;
+
+                const timelineWidth = 112;
+                const timelineHeight = 64;
+                canvas.width = timelineWidth * 2;
+                canvas.height = timelineHeight * 2;
+
+                const nextThumbnails: TimelineThumbnail[] = [];
+
+                for (let index = 0; index < thumbnailCount; index += 1) {
+                    const relativeMs = Math.round((index / (thumbnailCount - 1)) * clipDurationMs);
+                    const absoluteMs = usesProjectSource ? clipStartMs + relativeMs : relativeMs;
+
+                    await seekVideo(absoluteMs / 1000);
+                    if (cancelled) return;
+
+                    context.drawImage(extractor, 0, 0, canvas.width, canvas.height);
+                    const blob = await canvasToBlob();
+                    if (cancelled) return;
+
+                    nextThumbnails.push({
+                        id: index,
+                        src: URL.createObjectURL(blob),
+                        timeMs: relativeMs,
+                    });
+                }
+
+                if (cancelled) {
+                    nextThumbnails.forEach((thumb) => {
+                        if (thumb.src.startsWith('blob:')) {
+                            URL.revokeObjectURL(thumb.src);
+                        }
+                    });
+                    return;
+                }
+
+                setTimelineThumbnails(nextThumbnails);
+                setTimelineFramesReady(true);
+            } catch (error) {
+                console.error('Timeline frame extraction failed', error);
+                setTimelineFramesReady(false);
+                setTimelineThumbnails([]);
+            }
+        };
+
+        void buildThumbnails();
+
+        return () => {
+            cancelled = true;
+            extractor.pause();
+            extractor.src = '';
+            extractor.load();
+        };
+    }, [clipDurationMs, clipStartMs, clipVideoSrc, usesProjectSource]);
 
     useEffect(() => {
         const load = async () => {
@@ -416,11 +592,17 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
         }
     };
 
-    const handleWordClick = (startMs: number) => {
+    const seekPreviewToMs = (relativeMs: number) => {
         const video = videoRef.current;
         if (!video) return;
-        video.currentTime = (usesProjectSource ? clipStartMs + startMs : startMs) / 1000;
-        setCurrentTime(startMs);
+
+        const boundedMs = Math.max(0, Math.min(duration || clipDurationMs, relativeMs));
+        video.currentTime = (usesProjectSource ? clipStartMs + boundedMs : boundedMs) / 1000;
+        setCurrentTime(boundedMs);
+    };
+
+    const handleWordClick = (startMs: number) => {
+        seekPreviewToMs(startMs);
     };
 
     const handleWordChange = (segmentId: number, wordIndex: number, newText: string) => {
@@ -646,6 +828,67 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
     }[activeTool];
 
     const focusTranscriptPanel = () => transcriptPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const activeTimelineThumbnailId = useMemo(() => {
+        if (!timelineThumbnails.length) return null;
+
+        return timelineThumbnails.reduce((closestId, thumbnail) => {
+            const current = timelineThumbnails.find((item) => item.id === closestId);
+            if (!current) return thumbnail.id;
+
+            const currentDistance = Math.abs(current.timeMs - currentTime);
+            const nextDistance = Math.abs(thumbnail.timeMs - currentTime);
+            return nextDistance < currentDistance ? thumbnail.id : current.id;
+        }, timelineThumbnails[0].id);
+    }, [currentTime, timelineThumbnails]);
+    const timelinePlayheadPercent = useMemo(
+        () => Math.max(0, Math.min(100, (currentTime / Math.max(duration, 1)) * 100)),
+        [currentTime, duration]
+    );
+    const timelineRulerMarkers = useMemo(() => {
+        const majorStepMs = duration >= 45000 ? 15000 : Math.max(5000, Math.ceil(duration / 4 / 5000) * 5000);
+        const markers: Array<{ id: string; leftPercent: number; label: string }> = [];
+
+        for (let value = 0; value < duration; value += majorStepMs) {
+            markers.push({
+                id: `marker-${value}`,
+                leftPercent: (value / Math.max(duration, 1)) * 100,
+                label: formatTimelineMarker(value),
+            });
+        }
+
+        return markers;
+    }, [duration]);
+    const timelineMinorTicks = useMemo(
+        () => Array.from({ length: 48 }, (_, index) => ({ id: `tick-${index}`, leftPercent: (index / 47) * 100 })),
+        []
+    );
+    const timelineLayoutChips = useMemo<TimelineLayoutChip[]>(
+        () =>
+            (activeClip?.layoutSegments ?? [])
+                .filter((segment) => segment.endMs > segment.startMs)
+                .map((segment, index) => {
+                    const clampedStart = Math.max(0, Math.min(duration, segment.startMs));
+                    const clampedEnd = Math.max(clampedStart, Math.min(duration, segment.endMs));
+
+                    return {
+                        id: segment.id ?? `layout-segment-${index}`,
+                        label: segment.label,
+                        startPercent: (clampedStart / Math.max(duration, 1)) * 100,
+                        widthPercent: Math.max(3, ((clampedEnd - clampedStart) / Math.max(duration, 1)) * 100),
+                    };
+                }),
+        [activeClip?.layoutSegments, duration]
+    );
+
+    const handleTimelineSeekFromClientX = (clientX: number) => {
+        const track = timelineTrackRef.current;
+        if (!track) return;
+
+        const rect = track.getBoundingClientRect();
+        const relativeX = Math.max(0, Math.min(rect.width, clientX - rect.left));
+        const nextTimeMs = (relativeX / Math.max(rect.width, 1)) * duration;
+        seekPreviewToMs(nextTimeMs);
+    };
 
     const renderToolPanel = () => {
         const panelStyle: CSSProperties = {
@@ -1060,7 +1303,7 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
 
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 40px', minHeight: 0 }}>
                         <div style={{ width: previewWidth, aspectRatio: previewAspectRatio, background: '#111214', borderRadius: 8, position: 'relative', boxShadow: '0 24px 50px rgba(0,0,0,0.45)', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.10)' }}>
-                            <video ref={videoRef} src={clipVideoSrc} style={{ width: '100%', height: '100%', objectFit: layoutMode === 'Fill' ? 'cover' : 'contain', background: '#000' }} playsInline />
+                            <video key={`${clipVideoSrc}:${clipStartMs}:${clipEndMs}`} ref={videoRef} src={clipVideoSrc} style={{ width: '100%', height: '100%', objectFit: layoutMode === 'Fill' ? 'cover' : 'contain', background: '#000' }} playsInline preload="auto" />
                             {captionPreset.templateId !== 'none' && activeCaptionSegment && (
                                 <div style={previewCaptionStyle}>
                                     {previewCaptionLines.map((line, lineIndex) => (
@@ -1130,62 +1373,208 @@ export default function EditorView({ project, activeClip, onBack }: EditorViewPr
                 </div>
             </div>
 
-            <div style={{ height: showTimeline ? 188 : 54, borderTop: '1px solid rgba(255,255,255,0.08)', background: '#050505', display: 'flex', flexDirection: 'column', transition: 'height 0.2s ease' }}>
-                <div style={{ padding: '8px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                        <button onClick={() => setShowTimeline((current) => !current)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer', background: 'transparent', border: 'none' }}>
-                            <PlayCircle size={14} /> {showTimeline ? 'Hide timeline' : 'Show timeline'}
+            <div style={{ height: showTimeline ? 324 : 76, borderTop: '1px solid rgba(255,255,255,0.08)', background: '#040404', display: 'flex', flexDirection: 'column', transition: 'height 0.2s ease' }}>
+                <div style={{ padding: '16px 20px 14px', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                        <button
+                            onClick={() => setShowTimeline((current) => !current)}
+                            style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                fontSize: 13,
+                                color: '#f5f5f5',
+                                cursor: 'pointer',
+                                background: 'transparent',
+                                border: 'none',
+                                padding: 0
+                            }}
+                        >
+                            <PlayCircle size={16} />
+                            {showTimeline ? 'Hide timeline' : 'Show timeline'}
                         </button>
-                        <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.10)' }} />
-                        <div style={{ display: 'flex', gap: 12, color: '#9ca3af' }}>
-                            <PanelRightOpen size={14} style={{ cursor: 'pointer' }} />
-                            <Trash2 size={14} style={{ cursor: 'pointer' }} />
+                        <button style={{ background: 'transparent', border: 'none', color: '#e5e7eb', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <Columns2 size={17} />
+                        </button>
+                        <button style={{ background: 'transparent', border: 'none', color: '#cbd5e1', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <Trash2 size={17} />
+                        </button>
+                        <button style={{ background: 'transparent', border: 'none', color: '#cbd5e1', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <Volume2 size={17} />
+                        </button>
+                        <button
+                            style={{
+                                width: 36,
+                                height: 36,
+                                borderRadius: 10,
+                                border: '1px solid rgba(255,255,255,0.10)',
+                                background: 'rgba(255,255,255,0.08)',
+                                color: '#f5f5f5',
+                                cursor: 'pointer',
+                                display: 'grid',
+                                placeItems: 'center'
+                            }}
+                        >
+                            <Sparkles size={18} />
+                        </button>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20 }}>
+                        <button style={{ background: 'transparent', border: 'none', color: '#f5f5f5', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <SkipBack size={18} />
+                        </button>
+                        <button onClick={togglePlay} style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <Play size={19} fill="currentColor" strokeWidth={1.5} />
+                        </button>
+                        <button style={{ background: 'transparent', border: 'none', color: '#f5f5f5', cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}>
+                            <SkipForward size={18} />
+                        </button>
+                        <div style={{ fontSize: 15, fontWeight: 500, color: '#f8fafc', letterSpacing: '0.01em' }}>
+                            {formatEditorTimestamp(currentTime)}
+                            <span style={{ color: '#71717a', margin: '0 10px' }}>/</span>
+                            <span style={{ color: '#a1a1aa' }}>{formatEditorTimestamp(duration)}</span>
                         </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{formatMs(currentTime)} / {formatMs(duration)}</span>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 14 }}>
+                        <div style={{ width: 1, height: 34, background: 'rgba(255,255,255,0.08)' }} />
+                        <Search size={18} color="#f8fafc" />
+                        <ZoomOut size={18} color="#f8fafc" />
+                        <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={timelineZoom}
+                            onChange={(event) => setTimelineZoom(Number(event.target.value))}
+                            style={{ width: 116 }}
+                        />
+                        <ZoomIn size={18} color="#f8fafc" />
                     </div>
                 </div>
 
                 {showTimeline && (
-                    <div style={{ flex: 1, padding: '12px 20px 14px', position: 'relative', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#9ca3af' }}>
-                            <span>Trim Start: {formatMs(trimRange[0])}</span>
-                            <span>Trim End: {formatMs(trimRange[1])}</span>
-                        </div>
-                        <div style={{ height: 60, background: '#111214', borderRadius: 4, border: '1px solid rgba(255,255,255,0.08)', position: 'relative', padding: '0 10px' }}>
-                            <div style={{ paddingTop: 20 }}>
-                                <Slider
-                                    range
-                                    min={0}
-                                    max={duration > 0 ? duration : clipDurationMs}
-                                    value={trimRange}
-                                    onChange={(value) => setTrimRange(value as [number, number])}
-                                    trackStyle={[{ backgroundColor: '#f3f4f6', height: 8 }]}
-                                    handleStyle={[
-                                        { borderColor: '#fff', backgroundColor: '#f3f4f6', opacity: 1, width: 16, height: 16, marginTop: -4 },
-                                        { borderColor: '#fff', backgroundColor: '#f3f4f6', opacity: 1, width: 16, height: 16, marginTop: -4 }
-                                    ]}
-                                    railStyle={{ backgroundColor: 'rgba(255,255,255,0.10)', height: 8 }}
-                                />
-                            </div>
-                            <div style={{ position: 'absolute', left: `calc(10px + ${(currentTime / (duration || 1)) * 100}%)`, top: 0, height: '100%', width: 2, background: 'white', zIndex: 10, pointerEvents: 'none' }} />
-                        </div>
+                    <div style={{ flex: 1, minHeight: 0, padding: '10px 16px 16px', position: 'relative' }}>
+                        <div
+                            style={{
+                                position: 'relative',
+                                height: '100%',
+                            }}
+                        >
+                            <div style={{ width: '100%', minHeight: '100%', position: 'relative', padding: '4px 0 0', boxSizing: 'border-box' }}>
+                                <div style={{ position: 'relative', height: 88, width: 'calc(100% - 152px)', marginLeft: 76 }}>
+                                    {timelineMinorTicks.map((tick, index) => (
+                                        <div
+                                            key={tick.id}
+                                            style={{
+                                                position: 'absolute',
+                                                left: `${tick.leftPercent}%`,
+                                                top: 16,
+                                                width: index % 12 === 0 ? 2 : 1,
+                                                height: index % 12 === 0 ? 10 : 5,
+                                                borderRadius: 999,
+                                                background: index % 12 === 0 ? 'rgba(96, 165, 250, 0.4)' : 'rgba(255,255,255,0.12)',
+                                                transform: 'translateX(-50%)',
+                                            }}
+                                        />
+                                    ))}
+                                    {timelineRulerMarkers.map((marker) => (
+                                        <div key={marker.id} style={{ position: 'absolute', left: `${marker.leftPercent}%`, top: 0, transform: 'translateX(-50%)', fontSize: 14, fontWeight: 500, color: '#71717a' }}>
+                                            {marker.label}
+                                        </div>
+                                    ))}
+                                    <div style={{ position: 'absolute', left: `${timelinePlayheadPercent}%`, top: 0, bottom: -150, width: 2, background: 'rgba(255,255,255,0.92)', transform: 'translateX(-50%)', zIndex: 5, boxShadow: '0 0 0 1px rgba(255,255,255,0.08)' }} />
+                                    <div style={{ position: 'absolute', left: `${timelinePlayheadPercent}%`, top: 22, width: 16, height: 28, borderRadius: 999, border: '2px solid rgba(255,255,255,0.95)', background: '#0b0b0d', transform: 'translateX(-50%)', zIndex: 6 }} />
+                                </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '34px 1fr 34px', gap: 8, alignItems: 'center' }}>
-                            <button style={{ height: 34, borderRadius: 6, border: '1px solid rgba(255,255,255,0.12)', background: '#101113', color: '#f3f4f6', fontSize: 20, cursor: 'pointer' }}>+</button>
-                            <div style={{ height: 34, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden', display: 'flex', background: '#17181d' }}>
-                                {timelineThumbnails.map((thumb) => (
-                                    <img key={thumb.id} src={thumb.src} alt="timeline thumbnail" style={{ width: 32, height: 34, objectFit: 'cover', opacity: 0.95 }} />
-                                ))}
-                            </div>
-                            <button style={{ height: 34, borderRadius: 6, border: '1px solid rgba(255,255,255,0.12)', background: '#101113', color: '#f3f4f6', fontSize: 20, cursor: 'pointer' }}>+</button>
-                        </div>
+                                <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: '56px 1fr 56px', alignItems: 'start', gap: 20 }}>
+                                    <button style={{ width: 56, height: 56, marginTop: 48, borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', background: 'linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02))', color: '#f8fafc', fontSize: 34, cursor: 'pointer', display: 'grid', placeItems: 'center', boxShadow: '0 16px 32px rgba(0,0,0,0.28)' }}>+</button>
 
-                        <div style={{ height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', background: '#111214', display: 'flex', alignItems: 'center', padding: '0 8px', gap: 1 }}>
-                            {waveformBars.map((height, index) => (
-                                <span key={index} style={{ width: 1, height: Math.max(3, Math.min(24, height)), background: index % 6 === 0 ? '#6b7280' : '#4b5563', borderRadius: 1 }} />
-                            ))}
+                                    <div
+                                        ref={timelineTrackRef}
+                                        onPointerDown={(event) => {
+                                            const target = event.target as HTMLElement;
+                                            if (target.closest('button') || target.closest('input')) return;
+                                            handleTimelineSeekFromClientX(event.clientX);
+                                        }}
+                                        style={{ position: 'relative', minHeight: 132, width: '100%' }}
+                                    >
+                                        <div style={{ position: 'relative', height: timelineLayoutChips.length > 0 ? 34 : 0, marginBottom: timelineLayoutChips.length > 0 ? 10 : 0 }}>
+                                            {timelineLayoutChips.map((chip) => (
+                                                <div
+                                                    key={chip.id}
+                                                    style={{
+                                                        position: 'absolute',
+                                                        left: `${chip.startPercent}%`,
+                                                        width: `${chip.widthPercent}%`,
+                                                        minWidth: chip.label === 'Split' ? 76 : 28,
+                                                        height: 28,
+                                                        borderRadius: 6,
+                                                        border: '1px solid rgba(255,255,255,0.10)',
+                                                        background: 'rgba(15,15,18,0.88)',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        color: '#a1a1aa',
+                                                        fontSize: 12,
+                                                        fontWeight: 500,
+                                                        boxSizing: 'border-box',
+                                                    }}
+                                                >
+                                                    {chip.label}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div style={{ position: 'relative', borderRadius: 14, border: '2px solid rgba(255,255,255,0.86)', background: 'rgba(255,255,255,0.04)', padding: '3px 0', overflow: 'hidden', boxShadow: '0 24px 36px rgba(0,0,0,0.32)' }}>
+                                            <div style={{ display: 'flex', minHeight: 56 }}>
+                                                {timelineThumbnails.length > 0 ? timelineThumbnails.map((thumb) => (
+                                                    <button
+                                                        key={thumb.id}
+                                                        type="button"
+                                                        onClick={() => seekPreviewToMs(thumb.timeMs)}
+                                                        title={`Jump to ${formatEditorTimestamp(thumb.timeMs)}`}
+                                                        style={{
+                                                            height: 56,
+                                                            padding: 0,
+                                                            border: 'none',
+                                                            borderRight: '1px solid rgba(255,255,255,0.05)',
+                                                            background: activeTimelineThumbnailId === thumb.id ? 'rgba(255,255,255,0.14)' : 'transparent',
+                                                            cursor: 'pointer',
+                                                            position: 'relative',
+                                                            overflow: 'hidden',
+                                                            flex: '1 1 0',
+                                                            minWidth: 0,
+                                                            boxShadow: activeTimelineThumbnailId === thumb.id ? 'inset 0 0 0 1px rgba(255,255,255,0.20)' : 'none',
+                                                        }}
+                                                    >
+                                                        <img src={thumb.src} alt={`Timeline frame at ${formatEditorTimestamp(thumb.timeMs)}`} style={{ width: '100%', height: 56, objectFit: 'cover', opacity: 0.98, display: 'block' }} />
+                                                    </button>
+                                                )) : (
+                                                    <div style={{ width: '100%', minHeight: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 12 }}>
+                                                        {timelineFramesReady ? 'No frames available' : 'Loading frames...'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div style={{ marginTop: 16, height: 44, borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.03)', overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 2, padding: '0 8px' }}>
+                                            {waveformBars.map((height, index) => (
+                                                <span
+                                                    key={index}
+                                                    style={{
+                                                        width: 2,
+                                                        height: Math.max(6, Math.min(34, Math.round(height * 0.86))),
+                                                        background: index % 8 === 0 ? 'rgba(255,255,255,0.26)' : 'rgba(255,255,255,0.11)',
+                                                        borderRadius: 999,
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <button style={{ width: 56, height: 56, marginTop: 48, borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', background: 'linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02))', color: '#f8fafc', fontSize: 34, cursor: 'pointer', display: 'grid', placeItems: 'center', boxShadow: '0 16px 32px rgba(0,0,0,0.28)' }}>+</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}

@@ -51,6 +51,14 @@ export interface ClipSuggestion {
   thumbnailUrl?: string;
   videoUrl?: string;
   videoPath?: string;
+  aspectRatio?: AspectRatio;
+  captionStyle?: string;
+  layoutSegments?: Array<{
+    id?: string;
+    label: string;
+    startMs: number;
+    endMs: number;
+  }>;
   createdAt?: string;
   processingMode?: 'copy' | 'reencode';
 }
@@ -112,4 +120,20 @@ export interface AppState {
   activeClip: ClipSuggestion | null;
 }
 
-export type ViewType = 'home' | 'projects' | 'editor' | 'export' | 'settings' | 'folder' | 'calendar' | 'analytics' | 'link' | 'notify' | 'workflow' | 'clips-list';
+export type ViewType =
+  | 'home'
+  | 'projects'
+  | 'editor'
+  | 'export'
+  | 'settings'
+  | 'folder'
+  | 'calendar'
+  | 'analytics'
+  | 'link'
+  | 'notify'
+  | 'workflow'
+  | 'ai-reframe'
+  | 'clips-list'
+  | 'trends-google'
+  | 'trends-instagram'
+  | 'trends-tiktok';

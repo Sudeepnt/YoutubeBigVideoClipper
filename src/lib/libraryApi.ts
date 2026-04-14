@@ -29,8 +29,16 @@ interface StoredClip {
     score: number;
     selected: boolean;
     videoPath: string;
+    thumbnailPath: string | null;
+    aspectRatio?: string | null;
     createdAt: string;
     processingMode: 'copy' | 'reencode';
+}
+
+interface PreparedProcessingSource {
+    sourcePath: string;
+    durationSec: number;
+    thumbnailPath: string | null;
 }
 
 interface UploadProjectPayload {
@@ -56,7 +64,16 @@ const assetUrl = (path: string): string => {
     if (path.startsWith('blob:') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('asset:')) {
         return path;
     }
+    if (path.startsWith('/imports/') || path.startsWith('/generated-clips/')) {
+        return path;
+    }
+    if (isTauri() && isLocalDevHost() && path.startsWith('/')) {
+        return `/api/local-file?path=${encodeURIComponent(path)}`;
+    }
     if (isTauri()) {
+        if (path.startsWith('/')) {
+            return `http://127.0.0.1:14321/media?path=${encodeURIComponent(path)}`;
+        }
         return convertFileSrc(path);
     }
     return path;
@@ -117,6 +134,8 @@ const mapClip = (c: StoredClip): ClipSuggestion => ({
     selected: c.selected,
     videoPath: c.videoPath,
     videoUrl: assetUrl(c.videoPath),
+    thumbnailUrl: c.thumbnailPath ? assetUrl(c.thumbnailPath) : undefined,
+    aspectRatio: (c.aspectRatio as ClipSuggestion['aspectRatio']) ?? '9:16',
     createdAt: c.createdAt,
     processingMode: c.processingMode
 });
@@ -144,6 +163,48 @@ export async function createUploadProject(payload: UploadProjectPayload): Promis
     }
     const row = await invoke<StoredProject>('create_upload_project', { payload });
     return mapProject(row);
+}
+
+export async function pickUploadProject(): Promise<Project | null> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for native uploads.');
+    }
+    const row = await invoke<StoredProject | null>('pick_upload_project');
+    return row ? mapProject(row) : null;
+}
+
+export async function ensureProjectThumbnail(projectId: string): Promise<Project> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for project thumbnails.');
+    }
+    const row = await invoke<StoredProject>('ensure_project_thumbnail', { projectId });
+    return mapProject(row);
+}
+
+export async function loadProjectPreviewBlobUrl(projectId: string): Promise<string> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for source preview blobs.');
+    }
+    const bytes = await invoke<number[]>('load_project_preview_blob', { projectId });
+    const blob = new Blob([Uint8Array.from(bytes)], { type: 'video/mp4' });
+    return URL.createObjectURL(blob);
+}
+
+export async function prepareProjectPreviewUrl(projectId: string): Promise<string> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for source preview preparation.');
+    }
+    const previewPath = await invoke<string>('prepare_project_preview', { projectId });
+    return assetUrl(previewPath);
+}
+
+export async function loadProjectThumbnailBlobUrl(projectId: string): Promise<string> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for thumbnail blobs.');
+    }
+    const bytes = await invoke<number[]>('load_project_thumbnail_blob', { projectId });
+    const blob = new Blob([Uint8Array.from(bytes)], { type: 'image/jpeg' });
+    return URL.createObjectURL(blob);
 }
 
 export async function createLinkProject(url: string, quality = 1080): Promise<Project> {
@@ -191,16 +252,37 @@ export async function clearProjectClips(projectId: string): Promise<void> {
     await invoke('clear_project_clips', { projectId });
 }
 
+export async function prepareProcessingSource(args: {
+    projectId: string;
+    startMs: number;
+    endMs: number;
+}): Promise<{ sourcePath: string; durationSec: number; thumbnailUrl?: string }> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for selected-range source preparation.');
+    }
+
+    const row = await invoke<PreparedProcessingSource>('prepare_processing_source', args);
+    return {
+        sourcePath: row.sourcePath,
+        durationSec: row.durationSec,
+        thumbnailUrl: row.thumbnailPath ? assetUrl(row.thumbnailPath) : undefined,
+    };
+}
+
 export async function generateClipNative(args: {
     projectId: string;
     sourcePath?: string;
     startMs: number;
     endMs: number;
+    timelineStartMs?: number;
+    timelineEndMs?: number;
     index: number;
     hook: string;
     reason: string;
     score: number;
     selected: boolean;
+    aspectRatio?: string;
+    burnSubtitles?: boolean;
 }): Promise<ClipSuggestion> {
     if (!isTauri()) {
         const response = await fetch('/api/generate-clip', {
@@ -215,6 +297,14 @@ export async function generateClipNative(args: {
         return mapClip(payload as StoredClip);
     }
     const row = await invoke<StoredClip>('generate_clip_native', args);
+    return mapClip(row);
+}
+
+export async function burnClipSubtitles(clipId: string, modelSize = 'medium'): Promise<ClipSuggestion> {
+    if (!isTauri()) {
+        throw new Error('Desktop mode is required for subtitle burn.');
+    }
+    const row = await invoke<StoredClip>('burn_clip_subtitles', { clipId, modelSize });
     return mapClip(row);
 }
 

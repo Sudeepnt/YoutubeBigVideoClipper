@@ -8,6 +8,7 @@ interface SceneAnalysisPanelProps {
 
 export default function SceneAnalysisPanel({ clip }: SceneAnalysisPanelProps) {
   const [transcriptOnly, setTranscriptOnly] = useState(false);
+  const analysisTags = buildAnalysisTags(clip);
 
   useEffect(() => {
     setTranscriptOnly(false);
@@ -29,6 +30,14 @@ export default function SceneAnalysisPanel({ clip }: SceneAnalysisPanelProps) {
       </header>
 
       <div className="scene-analysis-body">
+        <div className="scene-analysis-badges">
+          {analysisTags.map((tag) => (
+            <span key={tag} className="scene-analysis-badge">
+              {tag}
+            </span>
+          ))}
+        </div>
+
         {!transcriptOnly && (
           <div className="scene-analysis-summary">
             {clip.summary.map((line) => (
@@ -53,6 +62,18 @@ export default function SceneAnalysisPanel({ clip }: SceneAnalysisPanelProps) {
       </div>
     </section>
   );
+}
+
+function buildAnalysisTags(clip: ClipDetails): string[] {
+  if (clip.score >= 90) {
+    return ['Useful quote', 'High retention'];
+  }
+
+  if (clip.score >= 82) {
+    return ['Bold opinion hook', 'Journey & tutorial'];
+  }
+
+  return ['Podcast insight', 'Share-worthy'];
 }
 
 function formatTimestamp(milliseconds: number): string {

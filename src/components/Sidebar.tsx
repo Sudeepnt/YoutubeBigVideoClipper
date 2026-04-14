@@ -5,6 +5,9 @@ import {
     Calendar,
     BarChart2,
     Link as LinkIcon,
+    Search,
+    Instagram,
+    Music2,
     ChevronDown,
     UserPlus,
     ArrowLeftToLine,
@@ -136,6 +139,43 @@ export default function Sidebar({ activeView, onViewChange, isExpanded, onToggle
                                 <RefreshCw size={18} />
                                 {isExpanded && 'Refresh App'}
                             </span>
+                        </button>
+                    </div>
+                </div>
+
+                <div>
+                    <div className="sidebar-group-title">{isExpanded ? 'Current Trends' : '•'}</div>
+                    <div className="sidebar-group-list">
+                        <button
+                            className={`sidebar-btn ${activeView === 'trends-google' ? 'active' : ''}`}
+                            onClick={() => onViewChange('trends-google')}
+                            title="Google Trends"
+                        >
+                            <span className="sidebar-btn-main">
+                                <Search size={18} />
+                                {isExpanded && 'Google Trends'}
+                            </span>
+                        </button>
+                        <button
+                            className={`sidebar-btn ${activeView === 'trends-instagram' ? 'active' : ''}`}
+                            onClick={() => onViewChange('trends-instagram')}
+                            title="Instagram Current Trends"
+                        >
+                            <span className="sidebar-btn-main">
+                                <Instagram size={18} />
+                                {isExpanded && 'Instagram Current Trends'}
+                            </span>
+                        </button>
+                        <button
+                            className={`sidebar-btn ${activeView === 'trends-tiktok' ? 'active' : ''}`}
+                            onClick={() => onViewChange('trends-tiktok')}
+                            title="TikTok Current Trends"
+                        >
+                            <span className="sidebar-btn-main">
+                                <Music2 size={18} />
+                                {isExpanded && 'TikTok Current Trends'}
+                            </span>
+                            {isExpanded && <span className="new-badge">New</span>}
                         </button>
                     </div>
                 </div>

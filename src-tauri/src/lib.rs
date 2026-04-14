@@ -3,11 +3,21 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
+use std::fs::File;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
 use tauri::Manager;
+use tiny_http::{Header, Method, Response, Server, StatusCode};
+use url::form_urlencoded;
 use uuid::Uuid;
+
+const MEDIA_SERVER_PORT: u16 = 14321;
+static PYTHON_HELPER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +50,8 @@ struct StoredClip {
     score: i32,
     selected: bool,
     video_path: String,
+    thumbnail_path: Option<String>,
+    aspect_ratio: Option<String>,
     created_at: String,
     processing_mode: String,
 }
@@ -115,6 +127,39 @@ struct StoredCaption {
     created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptWordRecord {
+    word: String,
+    start: i64,
+    end: i64,
+    confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProjectTranscript {
+    id: String,
+    project_id: String,
+    model_size: String,
+    status: String,
+    source_start_ms: Option<i64>,
+    source_end_ms: Option<i64>,
+    words: Vec<TranscriptWordRecord>,
+    language: Option<String>,
+    error: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectTranscriptResult {
+    model_size: String,
+    language: Option<String>,
+    words: Vec<TranscriptWordRecord>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredNotificationTarget {
@@ -154,6 +199,14 @@ struct StoredSetting {
     key: String,
     value: String,
     updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedProcessingSource {
+    source_path: String,
+    duration_sec: f64,
+    thumbnail_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +267,54 @@ struct UpsertCaptionPayload {
     language: String,
     srt_content: Option<String>,
     vtt_content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscribeSourcePayload {
+    project_id: String,
+    video_path: Option<String>,
+    model_size: Option<String>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscribeVideoPayload {
+    video_path: String,
+    model_size: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiReframePayload {
+    input_path: String,
+    output_path: String,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+    detection_interval: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiReframeResult {
+    status: String,
+    output_path: String,
+    width: i32,
+    height: i32,
+    fps: f64,
+    processed_frames: u64,
+    detection_interval: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptSidecarPayload {
+    model_size: String,
+    language: Option<String>,
+    word_count: usize,
+    words: Vec<TranscriptWordRecord>,
 }
 
 #[derive(Debug)]
@@ -517,6 +618,7 @@ fn init_schema_and_migrations(conn: &Connection) -> Result<(), String> {
     ensure_column(conn, "clips", "updated_at", "TEXT")?;
     ensure_column(conn, "clips", "workflow_id", "TEXT")?;
     ensure_column(conn, "clips", "thumbnail_path", "TEXT")?;
+    ensure_column(conn, "clips", "aspect_ratio", "TEXT")?;
 
     conn.execute_batch(
         r#"
@@ -600,6 +702,21 @@ fn init_schema_and_migrations(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(clip_id) REFERENCES clips(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS project_transcripts (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE,
+            model_size TEXT NOT NULL DEFAULT 'medium',
+            status TEXT NOT NULL DEFAULT 'processing',
+            source_start_ms INTEGER,
+            source_end_ms INTEGER,
+            words_json TEXT,
+            language TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS notification_targets (
             id TEXT PRIMARY KEY,
             channel TEXT NOT NULL,
@@ -635,12 +752,16 @@ fn init_schema_and_migrations(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_renders_project_id ON renders(project_id);
         CREATE INDEX IF NOT EXISTS idx_renders_workflow_id ON renders(workflow_id);
         CREATE INDEX IF NOT EXISTS idx_captions_project_id ON captions(project_id);
+        CREATE INDEX IF NOT EXISTS idx_project_transcripts_project_id ON project_transcripts(project_id);
         CREATE INDEX IF NOT EXISTS idx_notifications_project_id ON notifications(project_id);
         "#,
     )
     .map_err(|e| format!("Failed to initialize extended schema: {e}"))?;
 
-    conn.execute("PRAGMA user_version = 2", [])
+    ensure_column(conn, "project_transcripts", "source_start_ms", "INTEGER")?;
+    ensure_column(conn, "project_transcripts", "source_end_ms", "INTEGER")?;
+
+    conn.execute("PRAGMA user_version = 4", [])
         .map_err(|e| format!("Failed to set DB user_version: {e}"))?;
     Ok(())
 }
@@ -649,6 +770,228 @@ fn open_db(app: &tauri::AppHandle) -> Result<Connection, String> {
     let conn = Connection::open(db_path(app)?).map_err(|e| format!("Failed to open DB: {e}"))?;
     init_schema_and_migrations(&conn)?;
     Ok(conn)
+}
+
+fn media_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4") | Some("m4v") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        Some("mkv") => "video/x-matroska",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("aac") | Some("m4a") => "audio/aac",
+        _ => "application/octet-stream",
+    }
+}
+
+fn parse_range_header(value: &str, total_size: u64) -> Option<(u64, u64)> {
+    if !value.starts_with("bytes=") || total_size == 0 {
+        return None;
+    }
+
+    let (start_raw, end_raw) = value.trim_start_matches("bytes=").split_once('-')?;
+    if start_raw.is_empty() {
+        let suffix_len = end_raw.parse::<u64>().ok()?;
+        if suffix_len == 0 {
+            return None;
+        }
+        let start = total_size.saturating_sub(suffix_len);
+        return Some((start, total_size.saturating_sub(1)));
+    }
+
+    let start = start_raw.parse::<u64>().ok()?;
+    let end = if end_raw.is_empty() {
+        total_size.saturating_sub(1)
+    } else {
+        end_raw.parse::<u64>().ok()?.min(total_size.saturating_sub(1))
+    };
+
+    if start > end || start >= total_size {
+        return None;
+    }
+
+    Some((start, end))
+}
+
+fn text_header(name: &'static [u8], value: &str) -> Option<Header> {
+    Header::from_bytes(name, value.as_bytes()).ok()
+}
+
+fn respond_with_status(request: tiny_http::Request, status: StatusCode, body: &str) {
+    let mut response = Response::from_string(body.to_string()).with_status_code(status);
+    if let Some(header) = text_header(b"Content-Type", "text/plain; charset=utf-8") {
+        response = response.with_header(header);
+    }
+    let _ = request.respond(response);
+}
+
+fn handle_media_request(request: tiny_http::Request) {
+    if request.method() != &Method::Get && request.method() != &Method::Head {
+        respond_with_status(request, StatusCode(405), "Method not allowed");
+        return;
+    }
+
+    let request_url = request.url().to_string();
+    let (path_part, query_part) = request_url
+        .split_once('?')
+        .unwrap_or((request_url.as_str(), ""));
+
+    if path_part != "/media" {
+        respond_with_status(request, StatusCode(404), "Not found");
+        return;
+    }
+
+    let media_path = form_urlencoded::parse(query_part.as_bytes())
+        .find_map(|(key, value)| (key == "path").then(|| value.into_owned()))
+        .filter(|value| !value.is_empty());
+
+    let Some(media_path) = media_path else {
+        respond_with_status(request, StatusCode(400), "Missing media path");
+        return;
+    };
+
+    let file_path = PathBuf::from(media_path);
+    if !file_path.exists() || !file_path.is_file() {
+        respond_with_status(request, StatusCode(404), "Media file not found");
+        return;
+    }
+
+    let metadata = match fs::metadata(&file_path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            respond_with_status(
+                request,
+                StatusCode(500),
+                &format!("Failed to read media metadata: {error}"),
+            );
+            return;
+        }
+    };
+
+    let total_size = metadata.len();
+    let content_type = media_content_type(&file_path);
+    let range_header = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Range"))
+        .map(|header| header.value.as_str().to_string());
+
+    if let Some(range_header) = range_header {
+        let Some((start, end)) = parse_range_header(&range_header, total_size) else {
+            respond_with_status(request, StatusCode(416), "Invalid range");
+            return;
+        };
+
+        let read_len = end.saturating_sub(start).saturating_add(1);
+        let mut file = match File::open(&file_path) {
+            Ok(file) => file,
+            Err(error) => {
+                respond_with_status(
+                    request,
+                    StatusCode(500),
+                    &format!("Failed to open media file: {error}"),
+                );
+                return;
+            }
+        };
+
+        if let Err(error) = file.seek(SeekFrom::Start(start)) {
+            respond_with_status(
+                request,
+                StatusCode(500),
+                &format!("Failed to seek media file: {error}"),
+            );
+            return;
+        }
+
+        let mut buffer = vec![0_u8; read_len as usize];
+        if let Err(error) = file.read_exact(&mut buffer) {
+            respond_with_status(
+                request,
+                StatusCode(500),
+                &format!("Failed to read media file range: {error}"),
+            );
+            return;
+        }
+
+        let mut response = Response::from_data(buffer).with_status_code(StatusCode(206));
+        if let Some(header) = text_header(b"Content-Type", content_type) {
+            response = response.with_header(header);
+        }
+        if let Some(header) = text_header(b"Accept-Ranges", "bytes") {
+            response = response.with_header(header);
+        }
+        if let Some(header) = text_header(b"Content-Length", &read_len.to_string()) {
+            response = response.with_header(header);
+        }
+        if let Some(header) = text_header(
+            b"Content-Range",
+            &format!("bytes {start}-{end}/{total_size}"),
+        ) {
+            response = response.with_header(header);
+        }
+
+        let _ = request.respond(response);
+        return;
+    }
+
+    let file = match File::open(&file_path) {
+        Ok(file) => file,
+        Err(error) => {
+            respond_with_status(
+                request,
+                StatusCode(500),
+                &format!("Failed to open media file: {error}"),
+            );
+            return;
+        }
+    };
+
+    let mut response = Response::from_file(file);
+    if let Some(header) = text_header(b"Content-Type", content_type) {
+        response = response.with_header(header);
+    }
+    if let Some(header) = text_header(b"Accept-Ranges", "bytes") {
+        response = response.with_header(header);
+    }
+    if let Some(header) = text_header(b"Content-Length", &total_size.to_string()) {
+        response = response.with_header(header);
+    }
+
+    let _ = request.respond(response);
+}
+
+fn start_media_server() {
+    thread::spawn(|| {
+        let listener = match TcpListener::bind(("127.0.0.1", MEDIA_SERVER_PORT)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("ClipForge media server bind skipped: {error}");
+                return;
+            }
+        };
+
+        let server = match Server::from_listener(listener, None) {
+            Ok(server) => server,
+            Err(error) => {
+                eprintln!("ClipForge media server startup failed: {error}");
+                return;
+            }
+        };
+
+        for request in server.incoming_requests() {
+            handle_media_request(request);
+        }
+    });
 }
 
 fn map_project_row(row: &Row<'_>) -> rusqlite::Result<StoredProject> {
@@ -682,6 +1025,8 @@ fn map_clip_row(row: &Row<'_>) -> rusqlite::Result<StoredClip> {
         score: row.get("score")?,
         selected: selected_int != 0,
         video_path: row.get("video_path")?,
+        thumbnail_path: row.get("thumbnail_path")?,
+        aspect_ratio: row.get("aspect_ratio")?,
         created_at: row.get("created_at")?,
         processing_mode: row.get("processing_mode")?,
     })
@@ -758,6 +1103,28 @@ fn map_caption_row(row: &Row<'_>) -> rusqlite::Result<StoredCaption> {
     })
 }
 
+fn map_project_transcript_row(row: &Row<'_>) -> rusqlite::Result<StoredProjectTranscript> {
+    let words_json: Option<String> = row.get("words_json")?;
+    let words = words_json
+        .as_deref()
+        .map(|raw| serde_json::from_str::<Vec<TranscriptWordRecord>>(raw).unwrap_or_default())
+        .unwrap_or_default();
+
+    Ok(StoredProjectTranscript {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        model_size: row.get("model_size")?,
+        status: row.get("status")?,
+        source_start_ms: row.get("source_start_ms")?,
+        source_end_ms: row.get("source_end_ms")?,
+        words,
+        language: row.get("language")?,
+        error: row.get("error")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
 fn map_notification_target_row(row: &Row<'_>) -> rusqlite::Result<StoredNotificationTarget> {
     let enabled: i64 = row.get("is_enabled")?;
     Ok(StoredNotificationTarget {
@@ -816,18 +1183,21 @@ fn get_project_by_id(conn: &Connection, project_id: &str) -> Result<StoredProjec
 }
 
 fn get_clip_by_id(conn: &Connection, clip_id: &str) -> Result<StoredClip, String> {
-    conn.query_row(
+    let mut clip = conn.query_row(
         r#"
         SELECT
             id, project_id, start_ms, end_ms, hook, reason, score,
-            selected, video_path, created_at, processing_mode
+            selected, video_path, thumbnail_path, aspect_ratio, created_at, processing_mode
         FROM clips
         WHERE id = ?1
         "#,
         [clip_id],
         map_clip_row,
     )
-    .map_err(|e| format!("Clip not found: {e}"))
+    .map_err(|e| format!("Clip not found: {e}"))?;
+
+    hydrate_clip_aspect_ratio(conn, &mut clip);
+    Ok(clip)
 }
 
 fn get_workflow_by_id(conn: &Connection, workflow_id: &str) -> Result<StoredWorkflow, String> {
@@ -842,6 +1212,21 @@ fn get_workflow_by_id(conn: &Connection, workflow_id: &str) -> Result<StoredWork
         map_workflow_row,
     )
     .map_err(|e| format!("Workflow not found: {e}"))
+}
+
+fn get_project_transcript_row(conn: &Connection, project_id: &str) -> Result<Option<StoredProjectTranscript>, String> {
+    conn.query_row(
+        r#"
+        SELECT
+            id, project_id, model_size, status, source_start_ms, source_end_ms, words_json, language, error, created_at, updated_at
+        FROM project_transcripts
+        WHERE project_id = ?1
+        "#,
+        [project_id],
+        map_project_transcript_row,
+    )
+    .optional()
+    .map_err(|e| format!("Failed to load project transcript: {e}"))
 }
 
 fn list_steps_by_workflow_id(conn: &Connection, workflow_id: &str) -> Result<Vec<StoredWorkflowStep>, String> {
@@ -1040,7 +1425,710 @@ fn find_downloaded_source(project_folder: &Path) -> Result<PathBuf, String> {
     Err("Downloaded source file was not found.".to_string())
 }
 
-fn run_ffmpeg_clip(source_path: &Path, output_path: &Path, start_ms: u64, end_ms: u64) -> Result<String, String> {
+fn even_dimension(value: i32) -> i32 {
+    if value % 2 == 0 {
+        value
+    } else {
+        value - 1
+    }
+}
+
+fn build_aspect_crop_filter(source_width: i32, source_height: i32, aspect_ratio: &str) -> Option<String> {
+    if source_width <= 0 || source_height <= 0 {
+        return None;
+    }
+
+    let (ratio_width, ratio_height) = match aspect_ratio {
+        "9:16" => (9.0, 16.0),
+        "1:1" => (1.0, 1.0),
+        "16:9" => (16.0, 9.0),
+        "4:5" => (4.0, 5.0),
+        _ => return None,
+    };
+
+    let source_ratio = source_width as f64 / source_height as f64;
+    let target_ratio = ratio_width / ratio_height;
+    if (source_ratio - target_ratio).abs() < 0.01 {
+        return None;
+    }
+
+    let (crop_width, crop_height) = if source_ratio > target_ratio {
+        (even_dimension((source_height as f64 * target_ratio).round() as i32), even_dimension(source_height))
+    } else {
+        (even_dimension(source_width), even_dimension((source_width as f64 / target_ratio).round() as i32))
+    };
+
+    let offset_x = even_dimension(((source_width - crop_width) / 2).max(0));
+    let offset_y = even_dimension(((source_height - crop_height) / 2).max(0));
+
+    Some(format!("crop={crop_width}:{crop_height}:{offset_x}:{offset_y}"))
+}
+
+fn infer_aspect_ratio_from_dimensions(source_width: i32, source_height: i32) -> Option<String> {
+    if source_width <= 0 || source_height <= 0 {
+        return None;
+    }
+
+    let source_ratio = source_width as f64 / source_height as f64;
+    let candidates = [
+        ("9:16", 9.0 / 16.0),
+        ("1:1", 1.0),
+        ("16:9", 16.0 / 9.0),
+        ("4:5", 4.0 / 5.0),
+    ];
+
+    candidates
+        .iter()
+        .min_by(|(_, left_ratio), (_, right_ratio)| {
+            (source_ratio - left_ratio)
+                .abs()
+                .partial_cmp(&(source_ratio - right_ratio).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(label, _)| (*label).to_string())
+}
+
+fn hydrate_clip_aspect_ratio(conn: &Connection, clip: &mut StoredClip) {
+    if clip.aspect_ratio.is_some() {
+        return;
+    }
+
+    let probe = probe_media(Path::new(&clip.video_path));
+    let inferred = infer_aspect_ratio_from_dimensions(probe.width, probe.height);
+
+    if let Some(aspect_ratio) = inferred {
+        clip.aspect_ratio = Some(aspect_ratio.clone());
+        let _ = conn.execute(
+            "UPDATE clips SET aspect_ratio = ?1, updated_at = ?2 WHERE id = ?3",
+            params![aspect_ratio, now_iso(), clip.id.clone()],
+        );
+    }
+}
+
+fn extract_thumbnail_frame(source_path: &Path, output_path: &Path, seek_seconds: f64) -> Result<(), String> {
+    let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+        return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+    };
+
+    let seek = format!("{:.3}", seek_seconds.max(0.0));
+    let output = Command::new(&ffmpeg_path)
+        .arg("-y")
+        .arg("-ss")
+        .arg(&seek)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg("scale=640:-2")
+        .arg("-q:v")
+        .arg("4")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg for thumbnail extraction: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Thumbnail extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+fn resolve_python_path() -> Option<PathBuf> {
+    resolve_binary_path("python3").or_else(|| resolve_binary_path("python"))
+}
+
+fn transcribe_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join("transcribe.py")
+}
+
+fn subtitle_burn_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join("burn_subtitles.py")
+}
+
+fn ai_reframe_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join("ai_reframe")
+        .join("pipeline.py")
+}
+
+fn with_python_helper_lock<T>(
+    helper_name: &str,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let lock = PYTHON_HELPER_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| format!("The {helper_name} helper queue is unavailable right now."))?;
+    action()
+}
+
+#[cfg(unix)]
+fn cleanup_stale_python_helpers() {
+    let markers = [
+        transcribe_script_path().to_string_lossy().into_owned(),
+        subtitle_burn_script_path().to_string_lossy().into_owned(),
+        ai_reframe_script_path().to_string_lossy().into_owned(),
+        "src-tauri/python/transcribe.py".to_string(),
+        "src-tauri/python/burn_subtitles.py".to_string(),
+        "src-tauri/python/ai_reframe/pipeline.py".to_string(),
+    ];
+
+    let output = match Command::new("ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("Failed to inspect stale ClipForge Python helpers: {error}");
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        eprintln!(
+            "Failed to inspect stale ClipForge Python helpers: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(pid_str) = parts.next() else {
+            continue;
+        };
+        let Some(ppid_str) = parts.next() else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        let Ok(ppid) = ppid_str.parse::<u32>() else {
+            continue;
+        };
+
+        if ppid > 1 {
+            continue;
+        }
+
+        let command = parts.collect::<Vec<_>>().join(" ");
+        if !markers.iter().any(|marker| command.contains(marker)) {
+            continue;
+        }
+
+        match Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+        {
+            Ok(status) if status.success() => {
+                eprintln!("Cleaned up stale ClipForge Python helper process {pid}.");
+            }
+            Ok(status) => {
+                eprintln!(
+                    "Failed to stop stale ClipForge Python helper process {pid}: exit status {status}."
+                );
+            }
+            Err(error) => {
+                eprintln!("Failed to stop stale ClipForge Python helper process {pid}: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn cleanup_stale_python_helpers() {}
+
+fn normalize_transcript_range(
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> (Option<i64>, Option<i64>) {
+    let normalized_start = start_ms.map(|value| value.max(0));
+    let normalized_end = end_ms.map(|value| value.max(0));
+
+    match (normalized_start, normalized_end) {
+        (Some(start), Some(end)) if end > start => (Some(start), Some(end)),
+        (Some(start), None) => (Some(start), None),
+        (None, Some(end)) if end > 0 => (Some(0), Some(end)),
+        _ => (None, None),
+    }
+}
+
+fn transcript_covers_range(
+    transcript: &StoredProjectTranscript,
+    requested_start_ms: Option<i64>,
+    requested_end_ms: Option<i64>,
+) -> bool {
+    let transcript_start_ms = transcript.source_start_ms.unwrap_or(0);
+    let transcript_end_ms = transcript.source_end_ms.unwrap_or(i64::MAX);
+    let requested_start_ms = requested_start_ms.unwrap_or(0);
+    let requested_end_ms = requested_end_ms.unwrap_or(i64::MAX);
+
+    transcript_start_ms <= requested_start_ms && transcript_end_ms >= requested_end_ms
+}
+
+fn transcript_matches_range(
+    transcript: &StoredProjectTranscript,
+    requested_start_ms: Option<i64>,
+    requested_end_ms: Option<i64>,
+) -> bool {
+    transcript.source_start_ms == requested_start_ms
+        && transcript.source_end_ms == requested_end_ms
+}
+
+fn ffmpeg_seconds_from_ms(ms: i64) -> String {
+    format!("{:.3}", (ms.max(0) as f64) / 1000.0)
+}
+
+fn trim_media_to_range(
+    source_path: &Path,
+    output_path: &Path,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<(), String> {
+    let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+        return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+    };
+
+    let duration_ms = end_ms.saturating_sub(start_ms).max(1000);
+    let start_arg = ffmpeg_seconds_from_ms(start_ms as i64);
+    let duration_arg = ffmpeg_seconds_from_ms(duration_ms as i64);
+
+    let copy_output = Command::new(&ffmpeg_path)
+        .arg("-y")
+        .arg("-ss")
+        .arg(&start_arg)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-t")
+        .arg(&duration_arg)
+        .arg("-c")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg source trim: {e}"))?;
+
+    if copy_output.status.success() {
+        return Ok(());
+    }
+
+    let hardware_output = Command::new(&ffmpeg_path)
+        .arg("-y")
+        .arg("-ss")
+        .arg(&start_arg)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-t")
+        .arg(&duration_arg)
+        .arg("-c:v")
+        .arg("h264_videotoolbox")
+        .arg("-b:v")
+        .arg("5M")
+        .arg("-maxrate")
+        .arg("7M")
+        .arg("-bufsize")
+        .arg("14M")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("160k")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg hardware source trim: {e}"))?;
+
+    if hardware_output.status.success() {
+        return Ok(());
+    }
+
+    let software_output = Command::new(&ffmpeg_path)
+        .arg("-y")
+        .arg("-ss")
+        .arg(&start_arg)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-t")
+        .arg(&duration_arg)
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-preset")
+        .arg("veryfast")
+        .arg("-crf")
+        .arg("21")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("160k")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg software source trim: {e}"))?;
+
+    if software_output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Selected range trim failed: {}",
+            String::from_utf8_lossy(&software_output.stderr)
+        ))
+    }
+}
+
+fn extract_audio_for_transcription(
+    media_path: &Path,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<PathBuf, String> {
+    let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+        return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+    };
+
+    let (start_ms, end_ms) = normalize_transcript_range(start_ms, end_ms);
+
+    let temp_audio_path = std::env::temp_dir().join(format!(
+        "clipforge-transcribe-{}.wav",
+        Uuid::new_v4()
+    ));
+
+    let mut command = Command::new(ffmpeg_path);
+    command.arg("-y");
+
+    if let Some(start_ms) = start_ms {
+        command.arg("-ss").arg(ffmpeg_seconds_from_ms(start_ms));
+    }
+
+    command.arg("-i").arg(media_path);
+
+    if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
+        command
+            .arg("-t")
+            .arg(ffmpeg_seconds_from_ms(end_ms.saturating_sub(start_ms)));
+    }
+
+    let output = command
+        .arg("-vn")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(&temp_audio_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg for transcription audio extraction: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Audio extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(temp_audio_path)
+}
+
+fn ensure_project_preview_proxy_file(source_path: &Path) -> Result<PathBuf, String> {
+    let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+        return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+    };
+
+    let preview_folder = source_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir);
+    let preview_path = preview_folder.join("source_preview_proxy.mp4");
+
+    if preview_path.exists() {
+        return Ok(preview_path);
+    }
+
+    let copy_output = Command::new(&ffmpeg_path)
+        .arg("-y")
+        .arg("-i")
+        .arg(source_path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(&preview_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg preview proxy remux: {e}"))?;
+
+    if copy_output.status.success() {
+        return Ok(preview_path);
+    }
+
+    let scale_filter = "scale=w='min(960,iw)':h=-2";
+    let mut hardware = Command::new(&ffmpeg_path);
+    let hardware_output = hardware
+        .arg("-y")
+        .arg("-i")
+        .arg(source_path)
+        .arg("-vf")
+        .arg(scale_filter)
+        .arg("-c:v")
+        .arg("h264_videotoolbox")
+        .arg("-b:v")
+        .arg("450k")
+        .arg("-maxrate")
+        .arg("650k")
+        .arg("-bufsize")
+        .arg("1300k")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("48k")
+        .arg(&preview_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg preview proxy encode: {e}"))?;
+
+    if hardware_output.status.success() {
+        return Ok(preview_path);
+    }
+
+    let mut software = Command::new(&ffmpeg_path);
+    let software_output = software
+        .arg("-y")
+        .arg("-i")
+        .arg(source_path)
+        .arg("-vf")
+        .arg(scale_filter)
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-preset")
+        .arg("veryfast")
+        .arg("-crf")
+        .arg("32")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("48k")
+        .arg(&preview_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg software preview proxy encode: {e}"))?;
+
+    if software_output.status.success() {
+        Ok(preview_path)
+    } else {
+        Err(format!(
+            "Preview proxy generation failed: {}",
+            String::from_utf8_lossy(&software_output.stderr)
+        ))
+    }
+}
+
+fn run_faster_whisper_transcription(
+    media_path: &Path,
+    model_size: &str,
+) -> Result<TranscriptSidecarPayload, String> {
+    run_faster_whisper_transcription_for_range(media_path, model_size, None, None, 0)
+}
+
+fn run_faster_whisper_transcription_for_range(
+    media_path: &Path,
+    model_size: &str,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+    output_offset_ms: i64,
+) -> Result<TranscriptSidecarPayload, String> {
+    with_python_helper_lock("transcription", || {
+        let python_path = resolve_python_path()
+            .ok_or_else(|| "Python 3 was not found in a discoverable location.".to_string())?;
+        let script_path = transcribe_script_path();
+        let cpu_threads = std::thread::available_parallelism()
+            .map(|count| count.get().to_string())
+            .unwrap_or_else(|_| "4".to_string());
+
+        if !script_path.is_file() {
+            return Err(format!(
+                "Transcription helper script was not found at {}",
+                script_path.to_string_lossy()
+            ));
+        }
+
+        let (start_ms, end_ms) = normalize_transcript_range(start_ms, end_ms);
+        let audio_path = extract_audio_for_transcription(media_path, start_ms, end_ms)?;
+
+        let output = Command::new(python_path)
+            .env("CLIPFORGE_WHISPER_CPU_THREADS", cpu_threads)
+            .arg("-u")
+            .arg(script_path)
+            .arg(&audio_path)
+            .arg(model_size)
+            .output()
+            .map_err(|e| format!("Failed to launch faster-whisper helper: {e}"))?;
+
+        let _ = fs::remove_file(&audio_path);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                "faster-whisper helper failed.".to_string()
+            });
+        }
+
+        let mut transcript = serde_json::from_slice::<TranscriptSidecarPayload>(&output.stdout)
+            .map_err(|e| format!("Failed to parse faster-whisper output: {e}"))?;
+
+        if output_offset_ms != 0 {
+            for word in &mut transcript.words {
+                word.start += output_offset_ms;
+                word.end += output_offset_ms;
+            }
+        }
+
+        transcript.word_count = transcript.words.len();
+        Ok(transcript)
+    })
+}
+
+fn burn_subtitles_into_video(video_path: &Path, transcript: &TranscriptSidecarPayload) -> Result<(), String> {
+    with_python_helper_lock("subtitle burn", || {
+        let python_path = resolve_python_path()
+            .ok_or_else(|| "Python 3 was not found in a discoverable location.".to_string())?;
+        let script_path = subtitle_burn_script_path();
+
+        if !script_path.is_file() {
+            return Err(format!(
+                "Subtitle burn helper script was not found at {}",
+                script_path.to_string_lossy()
+            ));
+        }
+
+        let transcript_path =
+            env::temp_dir().join(format!("clipforge-burn-{}.json", Uuid::new_v4()));
+        let temp_output_path =
+            env::temp_dir().join(format!("clipforge-burn-{}.mp4", Uuid::new_v4()));
+        let final_output_path =
+            env::temp_dir().join(format!("clipforge-burn-final-{}.mp4", Uuid::new_v4()));
+
+        let payload = serde_json::to_vec(transcript)
+            .map_err(|e| format!("Failed to serialize subtitle transcript: {e}"))?;
+        fs::write(&transcript_path, payload)
+            .map_err(|e| format!("Failed to write subtitle transcript file: {e}"))?;
+
+        let render_output = Command::new(&python_path)
+            .arg("-u")
+            .arg(&script_path)
+            .arg(video_path)
+            .arg(&transcript_path)
+            .arg(&temp_output_path)
+            .output()
+            .map_err(|e| format!("Failed to launch subtitle burn helper: {e}"))?;
+
+        let _ = fs::remove_file(&transcript_path);
+
+        if !render_output.status.success() {
+            let stderr = String::from_utf8_lossy(&render_output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&render_output.stdout).trim().to_string();
+            let _ = fs::remove_file(&temp_output_path);
+            return Err(if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                "Subtitle burn helper failed.".to_string()
+            });
+        }
+
+        let Some(ffmpeg_path) = resolve_binary_path("ffmpeg") else {
+            let _ = fs::remove_file(&temp_output_path);
+            return Err("ffmpeg is not installed or not in a discoverable location.".to_string());
+        };
+
+        let mux_output = Command::new(ffmpeg_path)
+            .arg("-y")
+            .arg("-i")
+            .arg(&temp_output_path)
+            .arg("-i")
+            .arg(video_path)
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("1:a:0?")
+            .arg("-c:v")
+            .arg("copy")
+            .arg("-c:a")
+            .arg("aac")
+            .arg("-b:a")
+            .arg("160k")
+            .arg("-shortest")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(&final_output_path)
+            .output()
+            .map_err(|e| format!("Failed to mux subtitle-burned output audio: {e}"))?;
+
+        let _ = fs::remove_file(&temp_output_path);
+
+        if !mux_output.status.success() {
+            let stderr = String::from_utf8_lossy(&mux_output.stderr).trim().to_string();
+            let _ = fs::remove_file(&final_output_path);
+            return Err(if !stderr.is_empty() {
+                stderr
+            } else {
+                "Failed to mux subtitle-burned output audio.".to_string()
+            });
+        }
+
+        fs::rename(&final_output_path, video_path)
+            .or_else(|_| {
+                fs::copy(&final_output_path, video_path)?;
+                fs::remove_file(&final_output_path)
+            })
+            .map_err(|e| {
+                format!("Failed to replace output clip with subtitle-burned version: {e}")
+            })?;
+
+        Ok(())
+    })
+}
+
+fn run_ffmpeg_clip_with_aspect_ratio(
+    source_path: &Path,
+    output_path: &Path,
+    start_ms: u64,
+    end_ms: u64,
+    source_width: Option<i32>,
+    source_height: Option<i32>,
+    aspect_ratio: Option<&str>,
+) -> Result<String, String> {
     if end_ms <= start_ms {
         return Err("Invalid clip range: end must be greater than start.".to_string());
     }
@@ -1050,41 +2138,125 @@ fn run_ffmpeg_clip(source_path: &Path, output_path: &Path, start_ms: u64, end_ms
 
     let start_sec = format!("{:.3}", (start_ms as f64) / 1000.0);
     let duration_sec = format!("{:.3}", ((end_ms - start_ms) as f64) / 1000.0);
+    let crop_filter = match (source_width, source_height, aspect_ratio) {
+        (Some(width), Some(height), Some(ratio)) => build_aspect_crop_filter(width, height, ratio),
+        _ => None,
+    };
 
-    let copy_out = Command::new(&ffmpeg_path)
-        .arg("-y")
-        .arg("-ss")
-        .arg(&start_sec)
-        .arg("-t")
-        .arg(&duration_sec)
-        .arg("-i")
-        .arg(source_path)
-        .arg("-avoid_negative_ts")
-        .arg("1")
-        .arg("-c")
-        .arg("copy")
-        .arg(output_path)
-        .output()
-        .map_err(|e| format!("Failed to launch ffmpeg: {e}"))?;
+    if crop_filter.is_none() {
+        let copy_out = Command::new(&ffmpeg_path)
+            .arg("-y")
+            .arg("-ss")
+            .arg(&start_sec)
+            .arg("-t")
+            .arg(&duration_sec)
+            .arg("-i")
+            .arg(source_path)
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("0:a:0?")
+            .arg("-sn")
+            .arg("-dn")
+            .arg("-avoid_negative_ts")
+            .arg("1")
+            .arg("-c")
+            .arg("copy")
+            .arg(output_path)
+            .output()
+            .map_err(|e| format!("Failed to launch ffmpeg: {e}"))?;
 
-    if copy_out.status.success() {
-        return Ok("copy".to_string());
+        if copy_out.status.success() {
+            return Ok("copy".to_string());
+        }
     }
 
-    let reencode_out = Command::new(ffmpeg_path)
+    let mut reencode_hw = Command::new(&ffmpeg_path);
+    reencode_hw
         .arg("-y")
         .arg("-ss")
         .arg(&start_sec)
-        .arg("-i")
-        .arg(source_path)
         .arg("-t")
         .arg(&duration_sec)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("0:a:0?")
+        .arg("-sn")
+        .arg("-dn");
+
+    if let Some(filter) = crop_filter.as_ref() {
+        reencode_hw.arg("-vf").arg(filter);
+    }
+
+    let hw_out = reencode_hw
+        .arg("-c:v")
+        .arg("h264_videotoolbox")
+        .arg("-profile:v")
+        .arg("high")
+        .arg("-realtime")
+        .arg("true")
+        .arg("-prio_speed")
+        .arg("true")
+        .arg("-b:v")
+        .arg("8M")
+        .arg("-maxrate")
+        .arg("10M")
+        .arg("-bufsize")
+        .arg("16M")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("128k")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to launch ffmpeg hardware reencode: {e}"))?;
+
+    if hw_out.status.success() {
+        return Ok("reencode-hw".to_string());
+    }
+
+    let mut reencode_sw = Command::new(ffmpeg_path);
+    reencode_sw
+        .arg("-y")
+        .arg("-ss")
+        .arg(&start_sec)
+        .arg("-t")
+        .arg(&duration_sec)
+        .arg("-i")
+        .arg(source_path)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("0:a:0?")
+        .arg("-sn")
+        .arg("-dn");
+
+    if let Some(filter) = crop_filter.as_ref() {
+        reencode_sw.arg("-vf").arg(filter);
+    }
+
+    let reencode_out = reencode_sw
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
         .arg("veryfast")
+        .arg("-crf")
+        .arg("21")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
         .arg("-c:a")
         .arg("aac")
+        .arg("-b:a")
+        .arg("128k")
         .arg(output_path)
         .output()
         .map_err(|e| format!("Failed to launch ffmpeg reencode: {e}"))?;
@@ -1156,7 +2328,7 @@ fn list_project_clips(app: tauri::AppHandle, project_id: String) -> Result<Vec<S
             r#"
             SELECT
                 id, project_id, start_ms, end_ms, hook, reason, score,
-                selected, video_path, created_at, processing_mode
+                selected, video_path, thumbnail_path, aspect_ratio, created_at, processing_mode
             FROM clips
             WHERE project_id = ?1
             ORDER BY start_ms ASC
@@ -1170,7 +2342,9 @@ fn list_project_clips(app: tauri::AppHandle, project_id: String) -> Result<Vec<S
 
     let mut clips = Vec::new();
     for row in rows {
-        clips.push(row.map_err(|e| format!("Failed to read clip row: {e}"))?);
+        let mut clip = row.map_err(|e| format!("Failed to read clip row: {e}"))?;
+        hydrate_clip_aspect_ratio(&conn, &mut clip);
+        clips.push(clip);
     }
     Ok(clips)
 }
@@ -1521,6 +2695,153 @@ fn list_project_captions(app: tauri::AppHandle, project_id: String) -> Result<Ve
     Ok(out)
 }
 
+fn transcribe_source_impl(
+    app: tauri::AppHandle,
+    payload: TranscribeSourcePayload,
+) -> Result<StoredProjectTranscript, String> {
+    let conn = open_db(&app)?;
+    let project_id = payload.project_id;
+    let model_size = payload.model_size.unwrap_or_else(|| "medium".to_string());
+    let (requested_start_ms, requested_end_ms) =
+        normalize_transcript_range(payload.start_ms, payload.end_ms);
+
+    if let Some(existing) = get_project_transcript_row(&conn, &project_id)? {
+        if existing.status == "complete"
+            && transcript_covers_range(&existing, requested_start_ms, requested_end_ms)
+        {
+            return Ok(existing);
+        }
+
+        if existing.status == "processing"
+            && transcript_matches_range(&existing, requested_start_ms, requested_end_ms)
+        {
+            return Ok(existing);
+        }
+    }
+
+    let source_path = if let Some(path) = payload.video_path.filter(|value| !value.trim().is_empty()) {
+        path
+    } else {
+        conn.query_row(
+            "SELECT source_path FROM projects WHERE id = ?1",
+            [project_id.clone()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to look up project source path: {e}"))?
+        .ok_or_else(|| "Project source video was not found.".to_string())?
+    };
+
+    let transcript_id = Uuid::new_v4().to_string();
+    let created_at = now_iso();
+
+    conn.execute(
+        r#"
+        INSERT INTO project_transcripts (
+            id, project_id, model_size, status, source_start_ms, source_end_ms, words_json, language, error, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, 'processing', ?4, ?5, NULL, NULL, NULL, ?6, ?6)
+        ON CONFLICT(project_id) DO UPDATE SET
+            id = excluded.id,
+            model_size = excluded.model_size,
+            status = 'processing',
+            source_start_ms = excluded.source_start_ms,
+            source_end_ms = excluded.source_end_ms,
+            words_json = NULL,
+            language = NULL,
+            error = NULL,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            transcript_id,
+            project_id.clone(),
+            model_size.clone(),
+            requested_start_ms,
+            requested_end_ms,
+            created_at
+        ],
+    )
+    .map_err(|e| format!("Failed to mark project transcript as processing: {e}"))?;
+
+    match run_faster_whisper_transcription_for_range(
+        Path::new(&source_path),
+        &model_size,
+        requested_start_ms,
+        requested_end_ms,
+        requested_start_ms.unwrap_or(0),
+    ) {
+        Ok(result) => {
+            let words_json = serde_json::to_string(&result.words)
+                .map_err(|e| format!("Failed to serialize transcript words: {e}"))?;
+            let updated_at = now_iso();
+            conn.execute(
+                r#"
+                UPDATE project_transcripts
+                SET status = 'complete', words_json = ?1, language = ?2, error = NULL, updated_at = ?3
+                WHERE project_id = ?4 AND id = ?5
+                "#,
+                params![
+                    words_json,
+                    result.language,
+                    updated_at,
+                    project_id.clone(),
+                    transcript_id.clone()
+                ],
+            )
+            .map_err(|e| format!("Failed to store project transcript: {e}"))?;
+        }
+        Err(error) => {
+            conn.execute(
+                r#"
+                UPDATE project_transcripts
+                SET status = 'error', error = ?1, updated_at = ?2
+                WHERE project_id = ?3 AND id = ?4
+                "#,
+                params![error, now_iso(), project_id.clone(), transcript_id.clone()],
+            )
+            .map_err(|e| format!("Failed to store transcript error: {e}"))?;
+        }
+    }
+
+    get_project_transcript_row(&conn, &project_id)?
+        .ok_or_else(|| "Project transcript row was not found after transcription.".to_string())
+}
+
+#[tauri::command]
+async fn transcribe_source(
+    app: tauri::AppHandle,
+    payload: TranscribeSourcePayload,
+) -> Result<StoredProjectTranscript, String> {
+    tauri::async_runtime::spawn_blocking(move || transcribe_source_impl(app, payload))
+        .await
+        .map_err(|e| format!("Failed to join transcription task: {e}"))?
+}
+
+#[tauri::command]
+async fn transcribe_video(
+    _app: tauri::AppHandle,
+    payload: TranscribeVideoPayload,
+) -> Result<DirectTranscriptResult, String> {
+    let video_path = payload.video_path;
+    let model_size = payload.model_size.unwrap_or_else(|| "medium".to_string());
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let transcript = run_faster_whisper_transcription(Path::new(&video_path), &model_size)?;
+        Ok(DirectTranscriptResult {
+            model_size: transcript.model_size,
+            language: transcript.language,
+            words: transcript.words,
+        })
+    })
+    .await
+    .map_err(|e| format!("Failed to join direct transcription task: {e}"))?
+}
+
+#[tauri::command]
+fn get_project_transcript(app: tauri::AppHandle, project_id: String) -> Result<Option<StoredProjectTranscript>, String> {
+    let conn = open_db(&app)?;
+    get_project_transcript_row(&conn, &project_id)
+}
+
 #[tauri::command]
 fn upsert_notification_target(
     app: tauri::AppHandle,
@@ -1730,8 +3051,7 @@ fn get_app_setting(app: tauri::AppHandle, key: String) -> Result<Option<StoredSe
     .map_err(|e| format!("Failed to fetch app setting: {e}"))
 }
 
-#[tauri::command]
-fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -> Result<StoredProject, String> {
+fn persist_upload_project(app: &tauri::AppHandle, payload: UploadProjectPayload) -> Result<StoredProject, String> {
     let conn = open_db(&app)?;
     let project_id = Uuid::new_v4().to_string();
     let created_at = now_iso();
@@ -1787,13 +3107,25 @@ fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -
     } else {
         probe.file_size
     };
+    let thumbnail_path = project_folder.join("thumbnail.jpg");
+    let thumbnail_path_string = match extract_thumbnail_frame(
+        &source_dest,
+        &thumbnail_path,
+        if duration > 6.0 { 2.0 } else { 0.0 },
+    ) {
+        Ok(()) => Some(thumbnail_path.to_string_lossy().to_string()),
+        Err(error) => {
+            eprintln!("Failed to generate upload project thumbnail: {error}");
+            None
+        }
+    };
 
     conn.execute(
         r#"
         INSERT INTO projects (
             id, name, source_type, source_url, source_path, file_name, file_size,
             duration, resolution_width, resolution_height, created_at, status, thumbnail_path, updated_at, deleted_at
-        ) VALUES (?1, ?2, 'upload', NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'imported', NULL, ?9, NULL)
+        ) VALUES (?1, ?2, 'upload', NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'imported', ?10, ?9, NULL)
         "#,
         params![
             project_id,
@@ -1804,7 +3136,8 @@ fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -
             duration,
             width,
             height,
-            created_at
+            created_at,
+            thumbnail_path_string
         ],
     )
     .map_err(|e| format!("Failed to insert upload project: {e}"))?;
@@ -1828,6 +3161,48 @@ fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -
     )?;
 
     get_project_by_id(&conn, &project_id)
+}
+
+#[tauri::command]
+fn create_upload_project(app: tauri::AppHandle, payload: UploadProjectPayload) -> Result<StoredProject, String> {
+    persist_upload_project(&app, payload)
+}
+
+#[tauri::command]
+fn pick_upload_project(app: tauri::AppHandle) -> Result<Option<StoredProject>, String> {
+    let selected_path = rfd::FileDialog::new()
+        .set_title("Select a video to upload")
+        .add_filter(
+            "Video",
+            &[
+                "mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "flv", "mpeg", "mpg", "mts", "m2ts",
+            ],
+        )
+        .pick_file();
+
+    let Some(source_path) = selected_path else {
+        return Ok(None);
+    };
+
+    let file_name = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("upload.mp4")
+        .to_string();
+
+    let payload = UploadProjectPayload {
+        name: strip_extension(&file_name),
+        file_name,
+        file_size: 0,
+        duration: 0.0,
+        resolution_width: 0,
+        resolution_height: 0,
+        source_path: Some(source_path.to_string_lossy().to_string()),
+        source_bytes: None,
+    };
+
+    persist_upload_project(&app, payload).map(Some)
 }
 
 #[tauri::command]
@@ -1922,13 +3297,25 @@ fn create_link_project(app: tauri::AppHandle, url: String, quality: Option<i32>)
         .and_then(Value::as_str)
         .map(|value| value.to_string())
         .unwrap_or_else(|| strip_extension(&file_name));
+    let thumbnail_path = project_folder.join("thumbnail.jpg");
+    let thumbnail_path_string = match extract_thumbnail_frame(
+        &source_path,
+        &thumbnail_path,
+        if probe.duration > 6.0 { 2.0 } else { 0.0 },
+    ) {
+        Ok(()) => Some(thumbnail_path.to_string_lossy().to_string()),
+        Err(error) => {
+            eprintln!("Failed to generate link project thumbnail: {error}");
+            None
+        }
+    };
 
     conn.execute(
         r#"
         INSERT INTO projects (
             id, name, source_type, source_url, source_path, file_name, file_size,
             duration, resolution_width, resolution_height, created_at, status, thumbnail_path, updated_at, deleted_at
-        ) VALUES (?1, ?2, 'link', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'imported', NULL, ?10, NULL)
+        ) VALUES (?1, ?2, 'link', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'imported', ?11, ?10, NULL)
         "#,
         params![
             project_id,
@@ -1940,7 +3327,8 @@ fn create_link_project(app: tauri::AppHandle, url: String, quality: Option<i32>)
             probe.duration,
             probe.width,
             probe.height,
-            created_at
+            created_at,
+            thumbnail_path_string
         ],
     )
     .map_err(|e| format!("Failed to insert URL project: {e}"))?;
@@ -1967,6 +3355,86 @@ fn create_link_project(app: tauri::AppHandle, url: String, quality: Option<i32>)
 }
 
 #[tauri::command]
+fn ensure_project_thumbnail(app: tauri::AppHandle, project_id: String) -> Result<StoredProject, String> {
+    let conn = open_db(&app)?;
+    let (source_path, duration, current_thumbnail): (String, f64, Option<String>) = conn
+        .query_row(
+            "SELECT source_path, duration, thumbnail_path FROM projects WHERE id = ?1",
+            [project_id.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load project thumbnail state: {e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    if let Some(path) = current_thumbnail {
+        let thumb = PathBuf::from(&path);
+        if thumb.exists() {
+            return get_project_by_id(&conn, &project_id);
+        }
+    }
+
+    let project_folder = project_dir(&app, &project_id)?;
+    let thumbnail_path = project_folder.join("thumbnail.jpg");
+    extract_thumbnail_frame(
+        Path::new(&source_path),
+        &thumbnail_path,
+        if duration > 6.0 { 2.0 } else { 0.0 },
+    )?;
+
+    conn.execute(
+        "UPDATE projects SET thumbnail_path = ?1, updated_at = ?2 WHERE id = ?3",
+        params![thumbnail_path.to_string_lossy().to_string(), now_iso(), project_id],
+    )
+    .map_err(|e| format!("Failed to persist project thumbnail: {e}"))?;
+
+    get_project_by_id(&conn, &project_id)
+}
+
+#[tauri::command]
+fn load_project_preview_blob(app: tauri::AppHandle, project_id: String) -> Result<Vec<u8>, String> {
+    let conn = open_db(&app)?;
+    let source_path: String = conn
+        .query_row(
+            "SELECT source_path FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load preview source path: {e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    let preview_proxy_path = ensure_project_preview_proxy_file(Path::new(&source_path))?;
+    fs::read(&preview_proxy_path).map_err(|e| format!("Failed to read preview proxy: {e}"))
+}
+
+#[tauri::command]
+fn prepare_project_preview(app: tauri::AppHandle, project_id: String) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    let source_path: String = conn
+        .query_row(
+            "SELECT source_path FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load preview source path: {e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    let preview_proxy_path = ensure_project_preview_proxy_file(Path::new(&source_path))?;
+    Ok(preview_proxy_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn load_project_thumbnail_blob(app: tauri::AppHandle, project_id: String) -> Result<Vec<u8>, String> {
+    let project = ensure_project_thumbnail(app, project_id)?;
+    let thumbnail_path = project
+        .thumbnail_path
+        .ok_or_else(|| "Project thumbnail path is missing".to_string())?;
+    fs::read(thumbnail_path).map_err(|e| format!("Failed to read project thumbnail: {e}"))
+}
+
+#[tauri::command]
 fn clear_project_clips(app: tauri::AppHandle, project_id: String) -> Result<(), String> {
     let conn = open_db(&app)?;
 
@@ -1987,23 +3455,38 @@ fn clear_project_clips(app: tauri::AppHandle, project_id: String) -> Result<(), 
         }
     }
 
+    let mut thumb_stmt = conn
+        .prepare("SELECT thumbnail_path FROM clips WHERE project_id = ?1")
+        .map_err(|e| format!("Failed to query clip thumbnails: {e}"))?;
+    let thumb_paths = thumb_stmt
+        .query_map([project_id.clone()], |row| row.get::<_, Option<String>>(0))
+        .map_err(|e| format!("Failed to read clip thumbnail rows: {e}"))?;
+
+    for thumb_path in thumb_paths {
+        let Ok(Some(path)) = thumb_path else {
+            continue;
+        };
+        let p = PathBuf::from(path);
+        if p.exists() {
+            let _ = fs::remove_file(p);
+        }
+    }
+
     conn.execute("DELETE FROM clips WHERE project_id = ?1", [project_id])
         .map_err(|e| format!("Failed to clear project clips: {e}"))?;
     Ok(())
 }
 
-#[tauri::command]
-fn generate_clip_native(
+fn prepare_processing_source_impl(
     app: tauri::AppHandle,
     project_id: String,
     start_ms: u64,
     end_ms: u64,
-    index: u32,
-    hook: String,
-    reason: String,
-    score: i32,
-    selected: bool,
-) -> Result<StoredClip, String> {
+) -> Result<PreparedProcessingSource, String> {
+    if end_ms <= start_ms {
+        return Err("Selected processing timeframe must be at least 1 second long.".to_string());
+    }
+
     let conn = open_db(&app)?;
     let source_path: String = conn
         .query_row(
@@ -2020,6 +3503,72 @@ fn generate_clip_native(
         return Err("Project source video file not found on disk.".to_string());
     }
 
+    let processing_dir = project_dir(&app, &project_id)?.join("processing");
+    fs::create_dir_all(&processing_dir)
+        .map_err(|e| format!("Failed to create processing folder: {e}"))?;
+
+    let output_path = processing_dir.join(format!("selected_source_{}_{}.mp4", start_ms, end_ms));
+    if !output_path.exists() {
+        trim_media_to_range(&source_path, &output_path, start_ms, end_ms)?;
+    }
+
+    let duration_sec = ((end_ms - start_ms) as f64) / 1000.0;
+    let thumbnail_path = processing_dir.join(format!("selected_source_{}_{}.jpg", start_ms, end_ms));
+    let thumbnail_path_string = match extract_thumbnail_frame(
+        &output_path,
+        &thumbnail_path,
+        if duration_sec > 3.0 { 1.0 } else { 0.0 },
+    ) {
+        Ok(()) => Some(thumbnail_path.to_string_lossy().to_string()),
+        Err(error) => {
+            eprintln!("Failed to generate selected range thumbnail: {error}");
+            None
+        }
+    };
+
+    Ok(PreparedProcessingSource {
+        source_path: output_path.to_string_lossy().to_string(),
+        duration_sec,
+        thumbnail_path: thumbnail_path_string,
+    })
+}
+
+fn generate_clip_native_impl(
+    app: tauri::AppHandle,
+    project_id: String,
+    source_path: Option<String>,
+    start_ms: u64,
+    end_ms: u64,
+    index: u32,
+    hook: String,
+    reason: String,
+    score: i32,
+    selected: bool,
+    aspect_ratio: Option<String>,
+    burn_subtitles: bool,
+    timeline_start_ms: Option<u64>,
+    timeline_end_ms: Option<u64>,
+) -> Result<StoredClip, String> {
+    let conn = open_db(&app)?;
+    let (project_source_path, project_source_width, project_source_height): (String, i32, i32) = conn
+        .query_row(
+            "SELECT source_path, resolution_width, resolution_height FROM projects WHERE id = ?1",
+            [project_id.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load project source path: {e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    let source_path = PathBuf::from(source_path.unwrap_or(project_source_path));
+    if !source_path.exists() {
+        return Err("Clip source video file not found on disk.".to_string());
+    }
+
+    let probe = probe_media(&source_path);
+    let source_width = if probe.width > 0 { probe.width } else { project_source_width };
+    let source_height = if probe.height > 0 { probe.height } else { project_source_height };
+
     let clips_folder = project_dir(&app, &project_id)?.join("clips");
     fs::create_dir_all(&clips_folder)
         .map_err(|e| format!("Failed to create clips folder: {e}"))?;
@@ -2027,28 +3576,58 @@ fn generate_clip_native(
     let clip_id = Uuid::new_v4().to_string();
     let output_name = format!("clip_{:03}_{}_{}.mp4", index, start_ms, end_ms);
     let output_path = clips_folder.join(output_name);
-    let mode = run_ffmpeg_clip(&source_path, &output_path, start_ms, end_ms)?;
+    let persisted_aspect_ratio = aspect_ratio.unwrap_or_else(|| "9:16".to_string());
+    let mode = run_ffmpeg_clip_with_aspect_ratio(
+        &source_path,
+        &output_path,
+        start_ms,
+        end_ms,
+        Some(source_width),
+        Some(source_height),
+        Some(persisted_aspect_ratio.as_str()),
+    )?;
+
+    if burn_subtitles {
+        let transcript = run_faster_whisper_transcription(&output_path, "medium")?;
+        burn_subtitles_into_video(&output_path, &transcript)?;
+    }
+
+    let clip_duration_sec = ((end_ms - start_ms) as f64) / 1000.0;
+    let thumbnail_path = clips_folder.join(format!("clip_{:03}_{}_{}.jpg", index, start_ms, end_ms));
+    let thumbnail_path_string = match extract_thumbnail_frame(
+        &output_path,
+        &thumbnail_path,
+        if clip_duration_sec > 3.0 { 1.0 } else { 0.0 },
+    ) {
+        Ok(()) => Some(thumbnail_path.to_string_lossy().to_string()),
+        Err(error) => {
+            eprintln!("Failed to generate clip thumbnail: {error}");
+            None
+        }
+    };
     let created_at = now_iso();
 
     conn.execute(
         r#"
         INSERT INTO clips (
             id, project_id, start_ms, end_ms, hook, reason, score,
-            selected, video_path, created_at, processing_mode, updated_at, workflow_id, thumbnail_path
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?10, NULL, NULL)
+            selected, video_path, created_at, processing_mode, updated_at, workflow_id, thumbnail_path, aspect_ratio
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?10, NULL, ?12, ?13)
         "#,
         params![
             clip_id,
             project_id,
-            start_ms as i64,
-            end_ms as i64,
+            timeline_start_ms.unwrap_or(start_ms) as i64,
+            timeline_end_ms.unwrap_or(end_ms) as i64,
             hook,
             reason,
             score,
             if selected { 1 } else { 0 },
             output_path.to_string_lossy().to_string(),
             created_at,
-            mode
+            mode,
+            thumbnail_path_string,
+            persisted_aspect_ratio
         ],
     )
     .map_err(|e| format!("Failed to persist clip: {e}"))?;
@@ -2063,13 +3642,235 @@ fn generate_clip_native(
 }
 
 #[tauri::command]
+async fn prepare_processing_source(
+    app: tauri::AppHandle,
+    project_id: String,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<PreparedProcessingSource, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_processing_source_impl(app, project_id, start_ms, end_ms)
+    })
+    .await
+    .map_err(|e| format!("Failed to join processing source task: {e}"))?
+}
+
+#[tauri::command]
+async fn generate_clip_native(
+    app: tauri::AppHandle,
+    project_id: String,
+    source_path: Option<String>,
+    start_ms: u64,
+    end_ms: u64,
+    index: u32,
+    hook: String,
+    reason: String,
+    score: i32,
+    selected: bool,
+    aspect_ratio: Option<String>,
+    burn_subtitles: bool,
+    timeline_start_ms: Option<u64>,
+    timeline_end_ms: Option<u64>,
+) -> Result<StoredClip, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_clip_native_impl(
+            app,
+            project_id,
+            source_path,
+            start_ms,
+            end_ms,
+            index,
+            hook,
+            reason,
+            score,
+            selected,
+            aspect_ratio,
+            burn_subtitles,
+            timeline_start_ms,
+            timeline_end_ms,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join clip generation task: {e}"))?
+}
+
+fn burn_clip_subtitles_impl(
+    app: tauri::AppHandle,
+    clip_id: String,
+    model_size: String,
+) -> Result<StoredClip, String> {
+    let conn = open_db(&app)?;
+    let clip_state: (String, String, Option<String>, i64, i64) = conn
+        .query_row(
+            "SELECT project_id, video_path, thumbnail_path, start_ms, end_ms FROM clips WHERE id = ?1",
+            [clip_id.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load clip for subtitle burn: {e}"))?
+        .ok_or_else(|| "Clip not found".to_string())?;
+
+    let (project_id, video_path, thumbnail_path, start_ms, end_ms) = clip_state;
+    let video_path = PathBuf::from(video_path);
+    if !video_path.exists() {
+        return Err("Clip video file not found on disk.".to_string());
+    }
+
+    let transcript_from_project = get_project_transcript_row(&conn, &project_id)?
+        .filter(|stored| stored.status == "complete" && !stored.words.is_empty())
+        .map(|stored| TranscriptSidecarPayload {
+            model_size: stored.model_size,
+            language: stored.language,
+            word_count: stored
+                .words
+                .iter()
+                .filter(|word| word.end > start_ms && word.start < end_ms)
+                .count(),
+            words: stored
+                .words
+                .into_iter()
+                .filter(|word| word.end > start_ms && word.start < end_ms)
+                .map(|word| TranscriptWordRecord {
+                    word: word.word,
+                    start: (word.start - start_ms).max(0),
+                    end: (word.end.min(end_ms) - start_ms).max(0),
+                    confidence: word.confidence,
+                })
+                .collect(),
+        })
+        .filter(|payload| !payload.words.is_empty());
+
+    let transcript = if let Some(payload) = transcript_from_project {
+        payload
+    } else {
+        run_faster_whisper_transcription(&video_path, &model_size)?
+    };
+
+    if transcript.words.is_empty() {
+        return Err("No transcript words were available for this clip subtitle burn.".to_string());
+    }
+
+    burn_subtitles_into_video(&video_path, &transcript)?;
+
+    if let Some(thumbnail_path) = thumbnail_path {
+        let thumbnail_path = PathBuf::from(thumbnail_path);
+        let clip_duration_sec = ((end_ms - start_ms).max(0) as f64) / 1000.0;
+        if let Err(error) = extract_thumbnail_frame(
+            &video_path,
+            &thumbnail_path,
+            if clip_duration_sec > 3.0 { 1.0 } else { 0.0 },
+        ) {
+            eprintln!("Failed to refresh subtitled clip thumbnail: {error}");
+        }
+    }
+
+    conn.execute(
+        "UPDATE clips SET updated_at = ?1 WHERE id = ?2",
+        params![now_iso(), clip_id.clone()],
+    )
+    .map_err(|e| format!("Failed to update clip after subtitle burn: {e}"))?;
+
+    get_clip_by_id(&conn, &clip_id)
+}
+
+#[tauri::command]
+async fn burn_clip_subtitles(
+    app: tauri::AppHandle,
+    clip_id: String,
+    model_size: Option<String>,
+) -> Result<StoredClip, String> {
+    let model_size = model_size.unwrap_or_else(|| "medium".to_string());
+
+    tauri::async_runtime::spawn_blocking(move || burn_clip_subtitles_impl(app, clip_id, model_size))
+        .await
+        .map_err(|e| format!("Failed to join subtitle burn task: {e}"))?
+}
+
+fn process_ai_reframe_video_impl(payload: AiReframePayload) -> Result<AiReframeResult, String> {
+    let input_path = PathBuf::from(payload.input_path.trim());
+    if !input_path.exists() || !input_path.is_file() {
+        return Err("AI reframe input video file was not found on disk.".to_string());
+    }
+
+    let output_path = PathBuf::from(payload.output_path.trim());
+    if output_path.as_os_str().is_empty() {
+        return Err("AI reframe output path cannot be empty.".to_string());
+    }
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create AI reframe output folder: {e}"))?;
+        }
+    }
+
+    let output_width = payload.output_width.unwrap_or(720);
+    let output_height = payload.output_height.unwrap_or(1280);
+    if !((output_width == 720 && output_height == 1280)
+        || (output_width == 1080 && output_height == 1920))
+    {
+        return Err("AI reframe output must be 720x1280 or 1080x1920.".to_string());
+    }
+
+    let detection_interval = payload.detection_interval.unwrap_or(2).clamp(1, 8);
+    let python_path = resolve_python_path()
+        .ok_or_else(|| "Python 3 was not found in a discoverable location.".to_string())?;
+    let script_path = ai_reframe_script_path();
+
+    if !script_path.is_file() {
+        return Err(format!(
+            "AI reframe helper script was not found at {}",
+            script_path.to_string_lossy()
+        ));
+    }
+
+    with_python_helper_lock("ai reframe", || {
+        let output = Command::new(python_path)
+            .arg("-u")
+            .arg(script_path)
+            .arg(&input_path)
+            .arg(&output_path)
+            .arg("--width")
+            .arg(output_width.to_string())
+            .arg("--height")
+            .arg(output_height.to_string())
+            .arg("--detection-interval")
+            .arg(detection_interval.to_string())
+            .output()
+            .map_err(|e| format!("Failed to launch AI reframe helper: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                "AI reframe helper failed.".to_string()
+            });
+        }
+
+        serde_json::from_slice::<AiReframeResult>(&output.stdout)
+            .map_err(|e| format!("Failed to parse AI reframe output: {e}"))
+    })
+}
+
+#[tauri::command]
+async fn process_ai_reframe_video(payload: AiReframePayload) -> Result<AiReframeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || process_ai_reframe_video_impl(payload))
+        .await
+        .map_err(|e| format!("Failed to join AI reframe task: {e}"))?
+}
+
+#[tauri::command]
 fn delete_clip(app: tauri::AppHandle, clip_id: String) -> Result<(), String> {
     let conn = open_db(&app)?;
-    let clip_path: Option<String> = conn
+    let clip_file_state: Option<(String, Option<String>)> = conn
         .query_row(
-            "SELECT video_path FROM clips WHERE id = ?1",
+            "SELECT video_path, thumbnail_path FROM clips WHERE id = ?1",
             [clip_id.clone()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| format!("Failed to read clip: {e}"))?;
@@ -2077,10 +3878,16 @@ fn delete_clip(app: tauri::AppHandle, clip_id: String) -> Result<(), String> {
     conn.execute("DELETE FROM clips WHERE id = ?1", [clip_id])
         .map_err(|e| format!("Failed to delete clip row: {e}"))?;
 
-    if let Some(path) = clip_path {
+    if let Some((path, thumbnail_path)) = clip_file_state {
         let p = PathBuf::from(path);
         if p.exists() {
             let _ = fs::remove_file(p);
+        }
+        if let Some(thumbnail_path) = thumbnail_path {
+            let thumb = PathBuf::from(thumbnail_path);
+            if thumb.exists() {
+                let _ = fs::remove_file(thumb);
+            }
         }
     }
     Ok(())
@@ -2165,8 +3972,21 @@ fn export_clip(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    cleanup_stale_python_helpers();
+    start_media_server();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            if let Some(startup_hash) = env::args().nth(1).filter(|arg| arg.starts_with("#/")) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let startup_hash_json = serde_json::to_string(&startup_hash).unwrap_or_else(|_| "\"#/home\"".to_string());
+                    let _ = window.eval(&format!(
+                        "setTimeout(function() {{ window.location.hash = {startup_hash_json}; }}, 250);"
+                    ));
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             init_library,
@@ -2178,12 +3998,23 @@ pub fn run() {
             list_workflow_renders,
             start_agent_workflow,
             create_upload_project,
+            pick_upload_project,
             fetch_link_info,
             create_link_project,
+            ensure_project_thumbnail,
+            load_project_preview_blob,
+            prepare_project_preview,
+            load_project_thumbnail_blob,
             clear_project_clips,
+            prepare_processing_source,
             generate_clip_native,
+            burn_clip_subtitles,
+            process_ai_reframe_video,
             upsert_caption,
             list_project_captions,
+            transcribe_source,
+            transcribe_video,
+            get_project_transcript,
             upsert_notification_target,
             list_notification_targets,
             queue_notification,

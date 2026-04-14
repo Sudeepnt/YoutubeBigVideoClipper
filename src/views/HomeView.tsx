@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import {
     Link as LinkIcon,
     Upload,
@@ -16,15 +18,18 @@ import {
     Workflow
 } from 'lucide-react';
 import { Project } from '../types';
-import { fetchLinkInfo, type LinkInfo } from '../lib/libraryApi';
+import { fetchLinkInfo, loadProjectThumbnailBlobUrl, type LinkInfo } from '../lib/libraryApi';
 
 interface HomeViewProps {
     onFileSelect: (file: File) => void;
+    onDesktopUploadPick: () => void | Promise<void>;
+    onDesktopFileDrop: (filePath: string) => void | Promise<void>;
     projects: Project[];
     onOpenProject: (projectId: string) => void;
     onImportFromLink: (url: string, quality: number) => void;
     onDeleteProject: (projectId: string) => void;
     onLaunchWorkflowApp: () => void;
+    onLaunchAiReframeApp: () => void;
 }
 
 type FeatureModalType = 'long' | 'captions' | 'reframe' | null;
@@ -82,8 +87,62 @@ function estimateLinkImportSize(duration?: number, quality = 1080): number {
     return Math.round(safeDuration * bitrateMbps * 125_000);
 }
 
-export default function HomeView({ onFileSelect, projects, onOpenProject, onImportFromLink, onDeleteProject, onLaunchWorkflowApp }: HomeViewProps) {
+function ProjectMediaThumb({ project }: { project: Project }) {
+    const [resolvedThumbnailUrl, setResolvedThumbnailUrl] = useState<string | undefined>(project.thumbnailUrl);
+
+    useEffect(() => {
+        let cancelled = false;
+        let objectUrl: string | null = null;
+
+        setResolvedThumbnailUrl(project.thumbnailUrl);
+
+        if (!isTauri()) {
+            return () => undefined;
+        }
+
+        void loadProjectThumbnailBlobUrl(project.id)
+            .then((blobUrl) => {
+                if (cancelled) {
+                    URL.revokeObjectURL(blobUrl);
+                    return;
+                }
+                objectUrl = blobUrl;
+                setResolvedThumbnailUrl(blobUrl);
+            })
+            .catch((error) => {
+                console.error('Failed to resolve project thumbnail', error);
+            });
+
+        return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [project.id, project.thumbnailUrl]);
+
+    if (resolvedThumbnailUrl) {
+        return <img src={resolvedThumbnailUrl} alt={project.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
+    }
+
+    return (
+        <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: 'rgba(8, 11, 18, 0.92)', color: 'var(--text-tertiary)' }}>
+            <Video size={20} />
+        </div>
+    );
+}
+
+export default function HomeView({
+    onFileSelect,
+    onDesktopUploadPick,
+    onDesktopFileDrop,
+    projects,
+    onOpenProject,
+    onImportFromLink,
+    onDeleteProject,
+    onLaunchWorkflowApp,
+    onLaunchAiReframeApp
+}: HomeViewProps) {
     const [featureModal, setFeatureModal] = useState<FeatureModalType>(null);
+    const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
     const [sourceUrl, setSourceUrl] = useState('');
     const [linkQuality, setLinkQuality] = useState<number>(1080);
     const [linkInfo, setLinkInfo] = useState<LinkInfo | null>(null);
@@ -112,6 +171,49 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         }
     }, []);
 
+    useEffect(() => {
+        if (!isTauri()) return;
+
+        let mounted = true;
+        let detach: (() => void) | undefined;
+
+        void getCurrentWebview()
+            .onDragDropEvent((event) => {
+                if (!mounted) return;
+
+                if (event.payload.type === 'enter' || event.payload.type === 'over') {
+                    setIsDragActive(true);
+                    return;
+                }
+
+                if (event.payload.type === 'leave') {
+                    setIsDragActive(false);
+                    return;
+                }
+
+                if (event.payload.type === 'drop') {
+                    setIsDragActive(false);
+                    const droppedPath = event.payload.paths.find((item) => /\.(mp4|mov|m4v|mkv|avi|webm|wmv|flv|mpeg|mpg|mts|m2ts)$/i.test(item));
+                    if (!droppedPath) {
+                        alert('Please drop a valid video file.');
+                        return;
+                    }
+                    void onDesktopFileDrop(droppedPath);
+                }
+            })
+            .then((unlisten) => {
+                detach = unlisten;
+            })
+            .catch((error) => {
+                console.warn('Failed to attach native drag and drop listener:', error);
+            });
+
+        return () => {
+            mounted = false;
+            detach?.();
+        };
+    }, [onDesktopFileDrop]);
+
     const filteredHistory = useMemo(() => {
         const q = sourceUrl.trim().toLowerCase();
         if (!q) return linkHistory;
@@ -138,7 +240,13 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
     };
 
     // File Handlers
-    const handleModalUpload = () => modalFileInputRef.current?.click();
+    const handleModalUpload = () => {
+        if (isTauri()) {
+            void onDesktopUploadPick();
+            return;
+        }
+        modalFileInputRef.current?.click();
+    };
     const handleModalFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -146,7 +254,13 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         onFileSelect(file);
     };
 
-    const openUploadPicker = () => mainFileInputRef.current?.click();
+    const openUploadPicker = () => {
+        if (isTauri()) {
+            void onDesktopUploadPick();
+            return;
+        }
+        mainFileInputRef.current?.click();
+    };
     const handleMainFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -156,6 +270,13 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
     const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         setIsDragActive(false);
+        if (isTauri()) {
+            const droppedPath = Array.from(e.dataTransfer.files ?? []).map((file) => (file as File & { path?: string }).path).find(Boolean);
+            if (droppedPath) {
+                void onDesktopFileDrop(droppedPath);
+                return;
+            }
+        }
         const file = e.dataTransfer.files?.[0];
         if (!file) return;
         if (!file.type.startsWith('video/')) {
@@ -245,7 +366,59 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
         [linkInfo?.duration, linkQuality]
     );
     const downloadedEstimate = 0;
-    const recentProjects = projects.slice(0, 4);
+    const inProgressProjects = useMemo(
+        () => projects.filter((project) => (project.clipCount ?? 0) === 0).slice(0, 4),
+        [projects]
+    );
+    const completedProjects = useMemo(
+        () => projects.filter((project) => (project.clipCount ?? 0) > 0).slice(0, 4),
+        [projects]
+    );
+
+    const renderProjectGrid = (items: Project[], mode: 'in-progress' | 'complete') => (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+            {items.map((project) => (
+                <div
+                    key={project.id}
+                    className="project-card"
+                    onClick={() => onOpenProject(project.id)}
+                >
+                    <div className="project-thumb">
+                        <ProjectMediaThumb project={project} />
+                        <div className="project-badge" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}>
+                            {mode === 'complete' ? `${project.clipCount} Clips` : 'In Flow'}
+                        </div>
+                        <div className="project-expiry">
+                            <Clock size={10} style={{ display: 'inline', marginRight: 4 }} />
+                            {formatUploadedAgo(project.createdAt)}
+                        </div>
+                    </div>
+
+                    <div style={{ padding: '12px 14px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                            <div className="project-title" style={{ fontSize: 14 }}>{project.name}</div>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPendingDeleteProject(project);
+                                }}
+                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: 2 }}
+                                title="Delete this project permanently"
+                            >
+                                <Trash2 size={14} />
+                            </button>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <FileVideo size={12} />
+                            {mode === 'complete'
+                                ? (project.sourceType === 'link' ? 'Ready in Clips Result Page' : 'Ready in Clips Result Page')
+                                : 'Resume from workflow flow'}
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
 
     return (
         <div className="dashboard-hero">
@@ -419,13 +592,17 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                         { id: 'scene-map', title: 'Scene Map Flow', icon: Workflow, mode: 'app' as const },
                         { id: 'long', title: 'Viral Shorts Generator', icon: Sparkles, mode: 'app' as const },
                         { id: 'captions', title: 'Dynamic AI Captions', icon: ClosedCaption, mode: 'modal' as const },
-                        { id: 'reframe', title: 'Smart Auto-Reframe', icon: Crop, mode: 'modal' as const },
+                        { id: 'reframe', title: 'Smart Auto-Reframe', icon: Crop, mode: 'app' as const },
                     ].map((tool) => (
                         <button
                             type="button"
                             key={tool.id}
                             onClick={() => {
                                 if (tool.mode === 'app') {
+                                    if (tool.id === 'reframe') {
+                                        onLaunchAiReframeApp();
+                                        return;
+                                    }
                                     onLaunchWorkflowApp();
                                     return;
                                 }
@@ -452,64 +629,43 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                     transition={{ duration: 0.5, delay: 0.2 }}
                     style={{ gridColumn: '1 / 3', gridRow: '2 / 3', marginTop: 12 }}
                 >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                        <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Folder size={18} color="var(--text-primary)" /> Recent Library
-                        </h3>
-                        {projects.length > 4 && (
-                            <button style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer' }}>View All</button>
-                        )}
-                    </div>
-
-                    {projects.length > 0 ? (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-                            {recentProjects.map(project => (
-                                <div 
-                                    key={project.id} 
-                                    className="project-card"
-                                    onClick={() => onOpenProject(project.id)}
-                                >
-                                    <div className="project-thumb">
-                                        {project.thumbnailUrl ? (
-                                            <img src={project.thumbnailUrl} alt={project.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                        ) : (
-                                            <video src={`${project.filePath}#t=1`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} muted preload="metadata" />
-                                        )}
-                                        <div className="project-badge" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}>
-                                            {(project.clipCount ?? 0) > 0 ? `${project.clipCount} Clips` : 'Draft'}
-                                        </div>
-                                        <div className="project-expiry">
-                                            <Clock size={10} style={{ display: 'inline', marginRight: 4 }} />
-                                            {formatUploadedAgo(project.createdAt)}
-                                        </div>
-                                    </div>
-                                    
-                                    <div style={{ padding: '12px 14px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                                            <div className="project-title" style={{ fontSize: 14 }}>{project.name}</div>
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    if(window.confirm(`Delete ${project.name}?`)) onDeleteProject(project.id);
-                                                }}
-                                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: 2 }}
-                                            >
-                                                <Trash2 size={14} />
-                                            </button>
-                                        </div>
-                                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                            <FileVideo size={12} /> {project.sourceType === 'link' ? 'URL Import' : 'Local File'}
-                                        </div>
-                                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+                        {inProgressProjects.length > 0 && (
+                            <section>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                                    <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <Workflow size={18} color="var(--text-primary)" /> Continue In Flow
+                                    </h3>
                                 </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="glass-panel" style={{ width: '100%', padding: '40px', textAlign: 'center', borderRadius: 'var(--radius-lg)', borderStyle: 'dashed', borderColor: 'var(--border-bright)' }}>
-                            <Video size={32} color="var(--text-secondary)" style={{ margin: '0 auto 12px' }} />
-                            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>No projects yet. Your freshly forged clips will appear here.</p>
-                        </div>
-                    )}
+                                {renderProjectGrid(inProgressProjects, 'in-progress')}
+                            </section>
+                        )}
+
+                        <section>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                                <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <Folder size={18} color="var(--text-primary)" /> Recent Library
+                                </h3>
+                                {projects.length > 4 && (
+                                    <button style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer' }}>View All</button>
+                                )}
+                            </div>
+
+                            {completedProjects.length > 0 ? (
+                                renderProjectGrid(completedProjects, 'complete')
+                            ) : projects.length > 0 ? (
+                                <div className="glass-panel" style={{ width: '100%', padding: '28px 32px', textAlign: 'center', borderRadius: 'var(--radius-lg)', borderStyle: 'dashed', borderColor: 'var(--border-base)' }}>
+                                    <Folder size={28} color="var(--text-secondary)" style={{ margin: '0 auto 10px' }} />
+                                    <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Projects that finish clipping will show up here once they reach the Clips Result Page.</p>
+                                </div>
+                            ) : (
+                                <div className="glass-panel" style={{ width: '100%', padding: '40px', textAlign: 'center', borderRadius: 'var(--radius-lg)', borderStyle: 'dashed', borderColor: 'var(--border-bright)' }}>
+                                    <Video size={32} color="var(--text-secondary)" style={{ margin: '0 auto 12px' }} />
+                                    <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>No projects yet. Your freshly forged clips will appear here.</p>
+                                </div>
+                            )}
+                        </section>
+                    </div>
                 </motion.div>
 
             </div>
@@ -550,6 +706,61 @@ export default function HomeView({ onFileSelect, projects, onOpenProject, onImpo
                                     {featureModalContent[featureModal!].helper}
                                 </div>
                             )}
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {pendingDeleteProject && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="feature-modal-backdrop"
+                        onClick={() => setPendingDeleteProject(null)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, y: 10 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.95, y: 10 }}
+                            className="feature-modal"
+                            onClick={(event) => event.stopPropagation()}
+                        >
+                            <button className="feature-modal-close" onClick={() => setPendingDeleteProject(null)}>
+                                <X size={16} />
+                            </button>
+                            <h3 style={{ fontSize: 26, fontWeight: 700, marginBottom: 8, color: '#fff' }}>Delete permanently?</h3>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>
+                                This will permanently delete <strong style={{ color: '#fff' }}>{pendingDeleteProject.name}</strong> and all clips generated from it.
+                                This action cannot be undone.
+                            </p>
+
+                            <div className="delete-confirm-card">
+                                <div className="delete-confirm-meta">
+                                    <span className="delete-confirm-label">Source</span>
+                                    <strong>{pendingDeleteProject.sourceType === 'link' ? 'URL Import' : 'Local File'}</strong>
+                                </div>
+                                <div className="delete-confirm-actions">
+                                    <button
+                                        type="button"
+                                        className="upload-action-btn delete-confirm-cancel"
+                                        onClick={() => setPendingDeleteProject(null)}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="delete-confirm-danger"
+                                        onClick={() => {
+                                            onDeleteProject(pendingDeleteProject.id);
+                                            setPendingDeleteProject(null);
+                                        }}
+                                    >
+                                        Delete permanently
+                                    </button>
+                                </div>
+                            </div>
                         </motion.div>
                     </motion.div>
                 )}

@@ -9,7 +9,6 @@ import { AspectRatioOption, CaptionStyleTone, ClipDetails } from './types';
 
 interface ClipViewerOverlayProps {
   clip: ClipDetails;
-  captionText: string;
   onClose: () => void;
   onPreviousClip: () => void;
   onNextClip: () => void;
@@ -20,7 +19,6 @@ interface ClipViewerOverlayProps {
 
 export default function ClipViewerOverlay({
   clip,
-  captionText,
   onClose,
   onPreviousClip,
   onNextClip,
@@ -41,9 +39,13 @@ export default function ClipViewerOverlay({
 
   return (
     <div className="clip-viewer-backdrop" onClick={onClose}>
-      <section className="clip-viewer-overlay" onClick={(event) => event.stopPropagation()}>
+      <section
+        className={`clip-viewer-overlay ${clip.aspectRatio === '16:9' ? 'clip-viewer-overlay--wide' : ''}`}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="clip-viewer-header">
           <div className="clip-viewer-title-block">
+            <p className="clip-viewer-kicker">Clip Details</p>
             <div className="clip-viewer-title-row">
               <h2 className="clip-viewer-title">
                 #{clip.rank} {clip.title}
@@ -78,24 +80,13 @@ export default function ClipViewerOverlay({
 
         <div className="clip-viewer-body-grid">
           <ClipScorePanel score={clip.score} metrics={clip.metrics} />
-
-          <div className="clip-viewer-content-column">
-            <div className="clip-viewer-main-row">
-              <VideoPreviewPlayer
-                clip={clip}
-                captionText={captionText}
-                onAspectRatioChange={onAspectRatioChange}
-              />
-
-              <ClipActionsPanel
-                aspectRatio={clip.aspectRatio}
-                onAspectRatioChange={onAspectRatioChange}
-                onEditClip={onEditClip}
-              />
-            </div>
-
-            <SceneAnalysisPanel clip={clip} />
-          </div>
+          <VideoPreviewPlayer clip={clip} />
+          <SceneAnalysisPanel clip={clip} />
+          <ClipActionsPanel
+            aspectRatio={clip.aspectRatio}
+            onAspectRatioChange={onAspectRatioChange}
+            onEditClip={onEditClip}
+          />
         </div>
       </section>
     </div>

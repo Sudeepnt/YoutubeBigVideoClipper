@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import type { TranscriptWord } from '../types';
 
 export interface StoredSource {
     id: string;
@@ -61,6 +62,20 @@ export interface StoredCaption {
     createdAt: string;
 }
 
+export interface StoredProjectTranscript {
+    id: string;
+    projectId: string;
+    modelSize: string;
+    status: 'processing' | 'complete' | 'error';
+    sourceStartMs: number | null;
+    sourceEndMs: number | null;
+    words: TranscriptWord[];
+    language: string | null;
+    error: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface StartAgentWorkflowPayload {
     projectId: string;
     prompt: string;
@@ -112,6 +127,25 @@ export interface UpsertCaptionPayload {
     vttContent?: string;
 }
 
+export interface TranscribeSourcePayload {
+    projectId: string;
+    videoPath?: string;
+    modelSize?: string;
+    startMs?: number;
+    endMs?: number;
+}
+
+export interface TranscribeVideoPayload {
+    videoPath: string;
+    modelSize?: string;
+}
+
+export interface DirectTranscriptResult {
+    modelSize: string;
+    language: string | null;
+    words: TranscriptWord[];
+}
+
 async function requireDesktop<T>(fn: () => Promise<T>): Promise<T> {
     if (!isTauri()) {
         throw new Error('Desktop mode is required for persisted workflow APIs.');
@@ -145,6 +179,18 @@ export function upsertCaption(payload: UpsertCaptionPayload): Promise<StoredCapt
 
 export function listProjectCaptions(projectId: string): Promise<StoredCaption[]> {
     return requireDesktop(() => invoke<StoredCaption[]>('list_project_captions', { projectId }));
+}
+
+export function transcribeSource(payload: TranscribeSourcePayload): Promise<StoredProjectTranscript> {
+    return requireDesktop(() => invoke<StoredProjectTranscript>('transcribe_source', { payload }));
+}
+
+export function getProjectTranscript(projectId: string): Promise<StoredProjectTranscript | null> {
+    return requireDesktop(() => invoke<StoredProjectTranscript | null>('get_project_transcript', { projectId }));
+}
+
+export function transcribeVideo(payload: TranscribeVideoPayload): Promise<DirectTranscriptResult> {
+    return requireDesktop(() => invoke<DirectTranscriptResult>('transcribe_video', { payload }));
 }
 
 export function upsertNotificationTarget(payload: UpsertNotificationTargetPayload): Promise<StoredNotificationTarget> {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createWriteStream, promises as fs } from 'node:fs';
+import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -100,6 +100,23 @@ function sendJson(res: { statusCode: number; setHeader: (name: string, value: st
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify(body));
+}
+
+function inferContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.mp4':
+      return 'video/mp4';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
+    default:
+      return 'application/octet-stream';
+  }
 }
 
 function sanitizeFilePart(name: string): string {
@@ -264,6 +281,67 @@ function linkImportPlugin(): Plugin {
   return {
     name: 'clipforge-link-import',
     configureServer(server) {
+      server.middlewares.use('/api/local-file', async (req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          next();
+          return;
+        }
+
+        try {
+          const requestUrl = new URL(req.url ?? '', 'http://localhost');
+          const targetPath = requestUrl.searchParams.get('path')?.trim();
+          if (!targetPath || !path.isAbsolute(targetPath)) {
+            sendJson(res, 400, { error: 'Missing absolute path.' });
+            return;
+          }
+
+          const stat = await fs.stat(targetPath);
+          const contentType = inferContentType(targetPath);
+          const range = req.headers.range;
+
+          res.setHeader('accept-ranges', 'bytes');
+          res.setHeader('cache-control', 'no-store');
+          res.setHeader('content-type', contentType);
+
+          if (!range) {
+            res.statusCode = 200;
+            res.setHeader('content-length', stat.size);
+            if (req.method === 'HEAD') {
+              res.end();
+              return;
+            }
+            createReadStream(targetPath).pipe(res);
+            return;
+          }
+
+          const match = /bytes=(\d*)-(\d*)/.exec(range);
+          if (!match) {
+            res.statusCode = 416;
+            res.end();
+            return;
+          }
+
+          const start = match[1] ? Number(match[1]) : 0;
+          const end = match[2] ? Number(match[2]) : stat.size - 1;
+          const safeStart = Math.max(0, Math.min(start, stat.size - 1));
+          const safeEnd = Math.max(safeStart, Math.min(end, stat.size - 1));
+          const chunkSize = safeEnd - safeStart + 1;
+
+          res.statusCode = 206;
+          res.setHeader('content-length', chunkSize);
+          res.setHeader('content-range', `bytes ${safeStart}-${safeEnd}/${stat.size}`);
+
+          if (req.method === 'HEAD') {
+            res.end();
+            return;
+          }
+
+          createReadStream(targetPath, { start: safeStart, end: safeEnd }).pipe(res);
+        } catch (error) {
+          sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+
       server.middlewares.use('/api/clear-project-clips', async (req, res, next) => {
         if (req.method !== 'POST') {
           next();
@@ -343,6 +421,7 @@ function linkImportPlugin(): Plugin {
             score: Number(payload.score ?? 7),
             selected: Boolean(payload.selected ?? true),
             videoPath: `/generated-clips/${projectId}/${outputFileName}`,
+            aspectRatio: payload.aspectRatio ?? '9:16',
             createdAt: new Date().toISOString(),
             processingMode,
           };

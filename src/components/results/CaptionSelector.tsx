@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { CaptionStyleTone } from './types';
+import { SubtitleOverlay, SUBTITLE_STYLE_PRESETS, type SubtitleCue } from './SubtitleOverlay';
 import './CaptionSelector.css';
 
 interface CaptionSelectorProps {
@@ -11,13 +12,8 @@ interface CaptionSelectorProps {
 interface CaptionStyleOption {
   id: CaptionStyleTone;
   name: string;
+  desc: string;
 }
-
-type CaptionWordData = {
-  text: string;
-  index: number;
-  isAccent: boolean;
-};
 
 type CaptionStylePreviewProps = {
   styleId: CaptionStyleTone;
@@ -25,135 +21,38 @@ type CaptionStylePreviewProps = {
   compact?: boolean;
 };
 
-const STOPWORDS = new Set([
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'get', 'got',
-  'has', 'have', 'he', 'her', 'his', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'me',
-  'my', 'of', 'on', 'or', 'our', 'she', 'so', 'that', 'the', 'their', 'them', 'there',
-  'they', 'this', 'to', 'up', 'was', 'we', 'were', 'what', 'when', 'who', 'with', 'you',
-  'your',
-]);
-
 const PREVIEW_TEXT: Record<CaptionStyleTone, string> = {
-  'no-captions': '',
-  karaoke: 'TO GET STARTED',
-  beasty: 'TO GET STARTED',
-  'deep-diver': 'TO GET STARTED',
-  youshaei: 'TO GET STARTED',
-  'pod-p': 'TO GET STARTED',
-  mozi: 'TO GET STARTED',
-  popline: 'TO GET STARTED',
-  simple: 'TO GET STARTED',
-  'think-media': 'TO GET STARTED',
-  'glitch-infinite': 'TO GET STARTED',
-  'seamless-bounce': 'TO GET STARTED',
-  'baby-earthquake': 'TO GET STARTED',
-  'blur-switch': 'TO GET STARTED',
+  classic: 'TO GET STARTED',
+  tiktok: 'TO GET STARTED',
+  box: 'TO GET STARTED',
+  cinematic: 'TO GET STARTED',
+  outline: 'TO GET STARTED',
+  'bold-center': 'TO GET STARTED',
 };
 
-export const CAPTION_STYLE_OPTIONS: CaptionStyleOption[] = [
-  { id: 'no-captions', name: 'No captions' },
-  { id: 'karaoke', name: 'Karaoke' },
-  { id: 'beasty', name: 'Beasty' },
-  { id: 'deep-diver', name: 'Deep Diver' },
-  { id: 'youshaei', name: 'Youshaei' },
-  { id: 'pod-p', name: 'Pod P' },
-  { id: 'mozi', name: 'Mozi' },
-  { id: 'popline', name: 'Popline' },
-  { id: 'simple', name: 'Simple' },
-  { id: 'think-media', name: 'Think Media' },
-  { id: 'glitch-infinite', name: 'Glitch Infinite' },
-  { id: 'seamless-bounce', name: 'Seamless Bounce' },
-  { id: 'baby-earthquake', name: 'Baby Earthquake' },
-  { id: 'blur-switch', name: 'Blur Switch' },
-];
+export const CAPTION_STYLE_OPTIONS: CaptionStyleOption[] = SUBTITLE_STYLE_PRESETS;
 
-function normalizeWord(value: string) {
-  return value.toLowerCase().replace(/[^\w]/g, '');
-}
-
-function pickAccentIndex(words: string[]) {
-  if (!words.length) return -1;
-
-  let bestIndex = 0;
-  let bestScore = -1;
-
-  words.forEach((word, index) => {
-    const normalized = normalizeWord(word);
-    const score = normalized.length - (STOPWORDS.has(normalized) ? 4 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  });
-
-  return bestIndex;
-}
-
-function splitLines(words: string[], styleId: CaptionStyleTone) {
-  if (styleId !== 'karaoke') {
-    return words.length ? [words] : [];
-  }
-
-  if (words.length <= 2) {
-    return words.length ? [words] : [];
-  }
-
-  const splitIndex = Math.ceil(words.length / 2);
-  return [words.slice(0, splitIndex), words.slice(splitIndex)].filter((line) => line.length > 0);
-}
-
-function buildCaptionLines(styleId: CaptionStyleTone, text: string) {
-  const words = text
-    .split(/\s+/)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  const accentIndex = pickAccentIndex(words);
-  const lines = splitLines(words, styleId);
-
-  let globalIndex = 0;
-  return lines.map((line) =>
-    line.map((word) => {
-      const payload: CaptionWordData = {
-        text: word,
-        index: globalIndex,
-        isAccent: globalIndex === accentIndex,
-      };
-      globalIndex += 1;
-      return payload;
-    })
-  );
-}
-
-function getCaptionClassName(styleId: CaptionStyleTone) {
-  return `caption-preview tone-${styleId.replace(/[^a-z0-9]+/gi, '-')}`;
-}
+const PREVIEW_CUE: SubtitleCue = {
+  start: 0,
+  end: 2.4,
+  text: 'TO GET STARTED',
+};
 
 export function CaptionStylePreview({ styleId, text, compact = false }: CaptionStylePreviewProps) {
-  if (styleId === 'no-captions') {
-    return <div className="style-no-captions" />;
-  }
-
-  const resolvedText = text?.trim() || PREVIEW_TEXT[styleId] || 'TO GET STARTED';
-  const lines = buildCaptionLines(styleId, resolvedText);
+  const resolvedText = text?.trim() || PREVIEW_TEXT[styleId];
 
   return (
-    <div className={`${getCaptionClassName(styleId)} ${compact ? 'compact' : 'full'}`}>
-      {lines.map((line, lineIndex) => (
-        <div key={`${styleId}-line-${lineIndex}`} className="caption-preview-line">
-          {line.map((word) => (
-            <span
-              key={`${styleId}-${word.index}-${word.text}`}
-              className={[
-                'caption-preview-word',
-                word.isAccent ? 'is-accent' : '',
-                styleId === 'pod-p' && word.isAccent ? 'is-underlined' : '',
-              ].filter(Boolean).join(' ')}
-            >
-              {word.text}
-            </span>
-          ))}
-        </div>
-      ))}
+    <div className={`caption-preview-frame ${compact ? 'is-compact' : 'is-full'}`}>
+      <div className="caption-preview-stage">
+        <div className="caption-preview-video-wash" />
+        <SubtitleOverlay
+          stylePreset={styleId}
+          displayText={resolvedText}
+          currentTime={styleId === 'tiktok' ? 1.2 : 0.4}
+          currentSubtitle={PREVIEW_CUE}
+          compact={compact}
+        />
+      </div>
     </div>
   );
 }
@@ -206,7 +105,10 @@ export default function CaptionSelector({ value, onChange }: CaptionSelectorProp
                 <div className="caption-style-preview">
                   <CaptionStylePreview styleId={option.id} compact />
                 </div>
-                <div className="caption-style-name">{option.name}</div>
+                <div className="caption-style-meta">
+                  <div className="caption-style-name">{option.name}</div>
+                  <div className="caption-style-desc">{option.desc}</div>
+                </div>
               </div>
             );
           })}

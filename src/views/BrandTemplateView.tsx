@@ -12,6 +12,8 @@ import {
     formatOpusFontLabel,
     formatOpusTemplateLabel
 } from '../lib/opusBrandTemplates';
+import { CAPTION_STYLE_OPTIONS, CaptionStylePreview } from '../components/results/CaptionSelector';
+import type { CaptionStyleTone } from '../components/results/types';
 import './BrandTemplateView.css';
 
 type ActivePanel = 'none' | 'layout' | 'caption';
@@ -25,6 +27,13 @@ type PreviewCaptionWord = {
 type PreviewCaptionLine = {
     text: string;
     words: PreviewCaptionWord[];
+};
+
+type CaptionPresetCardOption = {
+    templateId: string;
+    name: string;
+    desc: string;
+    styleId: CaptionStyleTone | null;
 };
 
 const PREVIEW_DURATION_SECONDS = 60;
@@ -67,8 +76,27 @@ const VISIBLE_CAPTION_TEMPLATES = OPUS_CAPTION_TEMPLATES.filter((template) => {
     const templateIndex = NUMBERED_CAPTION_TEMPLATES.findIndex((item) => item.templateId === template.templateId);
     return !HIDDEN_CAPTION_SERIALS.has(templateIndex + 1);
 });
+const VISIBLE_NON_NONE_CAPTION_TEMPLATES = VISIBLE_CAPTION_TEMPLATES.filter((template) => template.templateId !== 'none');
+const BRAND_CAPTION_PRESET_OPTIONS: CaptionPresetCardOption[] = [
+    {
+        templateId: 'none',
+        name: 'No captions',
+        desc: 'Hide caption overlay',
+        styleId: null
+    },
+    ...CAPTION_STYLE_OPTIONS
+        .slice(0, VISIBLE_NON_NONE_CAPTION_TEMPLATES.length)
+        .map((styleOption, index) => ({
+            templateId: VISIBLE_NON_NONE_CAPTION_TEMPLATES[index].templateId,
+            name: styleOption.name,
+            desc: styleOption.desc,
+            styleId: styleOption.id
+        }))
+];
 
 const getCaptionTemplateDisplayLabel = (templateId: string, fallbackName: string) => {
+    const mappedPreset = BRAND_CAPTION_PRESET_OPTIONS.find((option) => option.templateId === templateId);
+    if (mappedPreset) return mappedPreset.name;
     if (templateId === 'none') return 'No captions';
     const templateIndex = NUMBERED_CAPTION_TEMPLATES.findIndex((template) => template.templateId === templateId);
     if (templateIndex >= 0) {
@@ -131,7 +159,7 @@ export default function BrandTemplateView() {
     const [captionLines, setCaptionLines] = useState('One line');
     const [highlightColor, setHighlightColor] = useState('#f5f5f5');
     const [selectedCaptionTemplateId, setSelectedCaptionTemplateId] = useState<string>(
-        OPUS_CAPTION_TEMPLATES[0]?.templateId ?? 'none'
+        BRAND_CAPTION_PRESET_OPTIONS[1]?.templateId ?? BRAND_CAPTION_PRESET_OPTIONS[0]?.templateId ?? 'none'
     );
     const [fontFamily, setFontFamily] = useState<(typeof OPUS_FONT_FAMILIES)[number]>(
         OPUS_FONT_FAMILIES[0] ?? 'Montserrat'
@@ -788,37 +816,27 @@ export default function BrandTemplateView() {
                         <div className="bt-tab-content">
                             {captionTab === 'presets' && (
                                 <div className="bt-presets-grid">
-                                    {VISIBLE_CAPTION_TEMPLATES.map((template) => {
-                                        const label = getCaptionTemplateDisplayLabel(template.templateId, template.name);
-                                        const isSelected = template.templateId === selectedCaptionTemplateId;
-                                        const previewThumb =
-                                            template.imgUrl
-                                            || template.gifUrl
-                                            || '';
+                                    {BRAND_CAPTION_PRESET_OPTIONS.map((option) => {
+                                        const isSelected = option.templateId === selectedCaptionTemplateId;
 
                                         return (
                                             <button
-                                                key={template.templateId}
+                                                key={option.templateId}
                                                 type="button"
                                                 className={`bt-preset-card ${isSelected ? 'selected' : ''}`}
-                                                onClick={() => setSelectedCaptionTemplateId(template.templateId)}
+                                                onClick={() => setSelectedCaptionTemplateId(option.templateId)}
                                                 aria-pressed={isSelected}
+                                                title={option.desc}
                                             >
-                                                {template.needNewTag && <span className="bt-new-badge">New</span>}
                                                 <div className="bt-preset-preview">
-                                                    {template.templateId === 'none' ? (
+                                                    {option.styleId === null ? (
                                                         <span className="bt-no-caption-icon">⊘</span>
                                                     ) : (
-                                                        <img
-                                                            src={previewThumb}
-                                                            alt={label}
-                                                            className="bt-preset-thumb"
-                                                            loading="lazy"
-                                                        />
+                                                        <CaptionStylePreview styleId={option.styleId} compact />
                                                     )}
                                                 </div>
                                                 <div className="bt-preset-meta">
-                                                    <span className="bt-preset-name">{label}</span>
+                                                    <span className="bt-preset-name">{option.name}</span>
                                                 </div>
                                             </button>
                                         );

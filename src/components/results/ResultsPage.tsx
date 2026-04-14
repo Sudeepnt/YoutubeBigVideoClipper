@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ViewType } from '../../types';
 import AppSidebar from './AppSidebar';
 import AutoHookNotice from './AutoHookNotice';
+import ClipActionModal, { type ClipActionType } from './ClipActionModal';
 import ClipViewerOverlay from './ClipViewerOverlay';
 import ClipRow from './ClipRow';
 import ResultsToolbar from './ResultsToolbar';
@@ -12,6 +13,7 @@ import './results-page.css';
 interface ResultsPageProps {
   projectTitle: string;
   clips: ClipItem[];
+  clipDetailsById: Record<string, ClipDetails>;
   totalClipCount: number;
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -27,18 +29,20 @@ interface ResultsPageProps {
   onNavigate?: (view: ViewType) => void;
   activeSidebarItem?: SidebarItem;
   viewerClip: ClipDetails | null;
-  viewerCaptionText: string;
   onCloseViewer: () => void;
   onPreviousViewerClip: () => void;
   onNextViewerClip: () => void;
   onViewerAspectRatioChange: (ratio: AspectRatioOption) => void;
+  onClipAspectRatioChange: (clipId: string, ratio: AspectRatioOption) => void;
   onViewerCaptionStyleChange: (style: CaptionStyleTone) => void;
   onEditViewerClip?: () => void;
+  onEditClipFromList?: (clipId: string) => void;
 }
 
 export default function ResultsPage({
   projectTitle,
   clips,
+  clipDetailsById,
   totalClipCount,
   searchValue,
   onSearchChange,
@@ -54,16 +58,18 @@ export default function ResultsPage({
   onNavigate,
   activeSidebarItem = 'clips',
   viewerClip,
-  viewerCaptionText,
   onCloseViewer,
   onPreviousViewerClip,
   onNextViewerClip,
   onViewerAspectRatioChange,
+  onClipAspectRatioChange,
   onViewerCaptionStyleChange,
   onEditViewerClip,
+  onEditClipFromList,
 }: ResultsPageProps) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isViewerOpen = Boolean(viewerClip);
+  const [activeAction, setActiveAction] = useState<{ action: ClipActionType; clip: ClipItem } | null>(null);
 
   useEffect(() => {
     const handleKeyboardShortcut = (event: KeyboardEvent) => {
@@ -91,7 +97,10 @@ export default function ResultsPage({
 
         <main className="results-content" aria-label="AI output review">
           <section className="results-content-head">
-            <p className="results-content-label">Original clips ({totalClipCount})</p>
+            <div className="results-page-title-block">
+              <p className="results-page-kicker">Clips Result Page</p>
+              <h1 className="results-page-title">Original clips ({totalClipCount})</h1>
+            </div>
             <ResultsToolbar viewMode={viewMode} onViewModeChange={onViewModeChange} />
           </section>
 
@@ -99,12 +108,22 @@ export default function ResultsPage({
 
           <ClipRow
             clips={clips}
+            viewMode={viewMode}
+            clipDetailsById={clipDetailsById}
             previewClipId={previewClipId}
             onPreviewClip={onPreviewClip}
             onOpenClip={onOpenClip}
-          />
+            onAction={(action, clip) => {
+              if (action === 'edit') {
+                onEditClipFromList?.(clip.id);
+                return;
+              }
 
-          <div className="results-empty-canvas" aria-hidden="true" />
+              setActiveAction({ action, clip });
+            }}
+            onViewerAspectRatioChange={onClipAspectRatioChange}
+            onEditClip={onEditClipFromList}
+          />
         </main>
       </div>
 
@@ -115,13 +134,20 @@ export default function ResultsPage({
       {viewerClip && (
         <ClipViewerOverlay
           clip={viewerClip}
-          captionText={viewerCaptionText}
           onClose={onCloseViewer}
           onPreviousClip={onPreviousViewerClip}
           onNextClip={onNextViewerClip}
           onAspectRatioChange={onViewerAspectRatioChange}
           onCaptionStyleChange={onViewerCaptionStyleChange}
           onEditClip={onEditViewerClip}
+        />
+      )}
+
+      {activeAction && (
+        <ClipActionModal
+          clip={activeAction.clip}
+          action={activeAction.action}
+          onClose={() => setActiveAction(null)}
         />
       )}
     </div>

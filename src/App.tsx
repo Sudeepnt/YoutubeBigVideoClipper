@@ -10,8 +10,10 @@ import AnalyticsView from './views/AnalyticsView';
 import SocialAccountsView from './views/SocialAccountsView';
 import NotifyView from './views/NotifyView';
 import WorkflowView from './views/WorkflowView';
+import AiReframeView from './views/AiReframeView';
 import SettingsView from './views/SettingsView';
 import ClipsListView from './views/ClipsListView';
+import CurrentTrendsView from './views/CurrentTrendsView';
 import { ViewType, AppState, Project, ClipSuggestion } from './types';
 import { defaultExportSettings, defaultSystemStatus } from './store';
 import {
@@ -23,10 +25,13 @@ import {
   initLibrary,
   listProjectClips,
   listProjects,
+  pickUploadProject,
 } from './lib/libraryApi';
 import { isTauri } from '@tauri-apps/api/core';
 import './styles/opus-fonts.css';
 import './index.css';
+
+const DEFAULT_VIEW: ViewType = 'editor';
 
 const VALID_VIEWS: ViewType[] = [
   'home',
@@ -40,12 +45,16 @@ const VALID_VIEWS: ViewType[] = [
   'link',
   'notify',
   'workflow',
-  'clips-list'
+  'ai-reframe',
+  'clips-list',
+  'trends-google',
+  'trends-instagram',
+  'trends-tiktok'
 ];
 
 function parseViewFromHash(hash: string): ViewType {
   const raw = hash.replace(/^#\/?/, '').trim();
-  return VALID_VIEWS.includes(raw as ViewType) ? (raw as ViewType) : 'home';
+  return VALID_VIEWS.includes(raw as ViewType) ? (raw as ViewType) : DEFAULT_VIEW;
 }
 
 function viewToHash(view: ViewType): string {
@@ -95,6 +104,7 @@ function App() {
   const [activeClip, setActiveClip] = useState<ClipSuggestion | null>(null);
   const previousViewRef = useRef<ViewType>(initialViewRef.current);
   const workflowPreviewProject = state.activeProject ?? (state.currentView === 'workflow' ? WORKFLOW_PREVIEW_PROJECT : null);
+  const editorPreviewProject = state.activeProject ?? (state.currentView === 'editor' ? WORKFLOW_PREVIEW_PROJECT : null);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,7 +153,7 @@ function App() {
   }, [state.currentView]);
 
   useEffect(() => {
-    if ((state.currentView === 'workflow' || state.currentView === 'clips-list') && !state.activeProject) {
+    if ((state.currentView === 'workflow' || state.currentView === 'clips-list' || state.currentView === 'editor') && !state.activeProject) {
       const firstProject = state.projects[0];
       if (!firstProject) return;
       setState((s) => ({ ...s, activeProject: firstProject }));
@@ -201,7 +211,7 @@ function App() {
           clips: [],
           currentView: 'workflow'
         }));
-        setWorkflowAutoStartId(fallbackProject.id);
+        setWorkflowAutoStartId(null);
         return;
       }
 
@@ -234,7 +244,56 @@ function App() {
         clips: [],
         currentView: 'workflow'
       }));
-      setWorkflowAutoStartId(project.id);
+      setWorkflowAutoStartId(null);
+    } catch (err) {
+      console.error(err);
+      alert(`Upload import failed: ${err}`);
+    }
+  }, []);
+
+  const handleDesktopUploadPick = useCallback(async () => {
+    try {
+      const project = await pickUploadProject();
+      if (!project) return;
+
+      setState((s) => ({
+        ...s,
+        projects: [project, ...s.projects.filter((p) => p.id !== project.id)],
+        activeProject: project,
+        clips: [],
+        currentView: 'workflow'
+      }));
+      setWorkflowAutoStartId(null);
+    } catch (err) {
+      console.error(err);
+      alert(`Upload import failed: ${err}`);
+    }
+  }, []);
+
+  const handleDesktopFileDrop = useCallback(async (sourcePath: string) => {
+    try {
+      const normalizedPath = sourcePath.trim();
+      if (!normalizedPath) return;
+
+      const fileName = normalizedPath.split('/').pop() || 'upload.mp4';
+      const project = await createUploadProject({
+        name: fileName.replace(/\.[^/.]+$/, ''),
+        fileName,
+        fileSize: 0,
+        duration: 0,
+        resolutionWidth: 0,
+        resolutionHeight: 0,
+        sourcePath: normalizedPath,
+      });
+
+      setState((s) => ({
+        ...s,
+        projects: [project, ...s.projects.filter((p) => p.id !== project.id)],
+        activeProject: project,
+        clips: [],
+        currentView: 'workflow'
+      }));
+      setWorkflowAutoStartId(null);
     } catch (err) {
       console.error(err);
       alert(`Upload import failed: ${err}`);
@@ -407,6 +466,16 @@ function App() {
     }));
   }, []);
 
+  const handleLaunchAiReframeApp = useCallback(() => {
+    setPreparingWorkflowProjectId(null);
+    setWorkflowAutoStartId(null);
+    setState((s) => ({
+      ...s,
+      activeProject: s.activeProject ?? s.projects[0] ?? null,
+      currentView: 'ai-reframe'
+    }));
+  }, []);
+
   const handleViewChange = useCallback((view: ViewType) => {
     setState((s) => ({ ...s, currentView: view }));
   }, []);
@@ -422,7 +491,7 @@ function App() {
     <div className={`app-shell ${useResultsLayout ? 'app-shell-results' : ''}`}>
       {!useResultsLayout && (
         <Sidebar
-          activeView={state.currentView === 'workflow' || state.currentView === 'clips-list' ? 'home' : state.currentView}
+          activeView={state.currentView === 'workflow' || state.currentView === 'clips-list' || state.currentView === 'ai-reframe' ? 'home' : state.currentView}
           onViewChange={handleViewChange}
           isExpanded={isSidebarExpanded}
           onToggle={toggleSidebar}
@@ -433,17 +502,20 @@ function App() {
         {state.currentView === 'home' && (
           <HomeView
             onFileSelect={handleFileSelect}
+            onDesktopUploadPick={handleDesktopUploadPick}
+            onDesktopFileDrop={handleDesktopFileDrop}
             projects={state.projects}
             onOpenProject={handleOpenProject}
             onImportFromLink={handleImportFromLink}
             onDeleteProject={handleDeleteProject}
             onLaunchWorkflowApp={handleLaunchWorkflowApp}
+            onLaunchAiReframeApp={handleLaunchAiReframeApp}
           />
         )}
 
-        {state.currentView === 'editor' && state.activeProject && (
+        {state.currentView === 'editor' && editorPreviewProject && (
           <EditorView
-            project={state.activeProject}
+            project={editorPreviewProject}
             activeClip={activeClip}
             onBack={() => handleViewChange('clips-list')}
           />
@@ -471,18 +543,35 @@ function App() {
             onClearProjectClips={async (projectId) => {
               await clearProjectClips(projectId);
             }}
-            onBack={() => handleViewChange(state.activeProject ? 'workflow' : 'home')}
+            onBack={() => handleViewChange('home')}
             onViewChange={handleViewChange}
+          />
+        )}
+
+        {state.currentView === 'ai-reframe' && (
+          <AiReframeView
+            projects={state.projects}
+            activeProject={state.activeProject}
+            onBack={() => handleViewChange('home')}
           />
         )}
 
         {state.currentView === 'analytics' && <AnalyticsView />}
 
-        {state.currentView === 'calendar' && <CalendarView />}
+        {state.currentView === 'calendar' && (
+          <CalendarView
+            project={state.activeProject}
+            clips={state.clips}
+          />
+        )}
 
         {state.currentView === 'projects' && <BrandTemplateView />}
 
         {state.currentView === 'folder' && <AssetLibraryView />}
+
+        {state.currentView === 'trends-google' && <CurrentTrendsView platform="google" />}
+        {state.currentView === 'trends-instagram' && <CurrentTrendsView platform="instagram" />}
+        {state.currentView === 'trends-tiktok' && <CurrentTrendsView platform="tiktok" />}
 
         {state.currentView === 'settings' && <SettingsView systemStatus={state.systemStatus} />}
         {state.currentView === 'notify' && <NotifyView />}
